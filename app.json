@@ -1,0 +1,24 @@
+{
+    "expo": {
+        "name": "ink-plots",
+        "slug": "ink-plots",
+        "scheme": "ink-plots",
+        "version": "1.0.0",
+        "orientation": "portrait",
+        "userInterfaceStyle": "light",
+        "assetBundlePatterns": [
+            "**/*"
+        ],
+        "ios": {
+            "supportsTablet": true
+        },
+        "android": {
+            "adaptiveIcon": {
+                "backgroundColor": "#ffffff"
+            }
+        },
+        "web": {
+            "bundler": "metro"
+        }
+    }
+}
