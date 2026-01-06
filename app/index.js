@@ -1,3 +1,4 @@
+import { useState, useEffect } from 'react';
 import { Text, View, ScrollView } from 'react-native';
 import { Stack } from 'expo-router';
 import BookCard from '../components/BookCard';
@@ -5,14 +6,22 @@ import Hero from '../components/Hero';
 import AnimatedEntry from '../components/AnimatedEntry';
 
 export default function Page() {
-    const featuredBooks = [
-        { id: '1', title: 'The Silent Echo', author: 'Elena Fisher', color: '#f5f5f5' },
-        { id: '2', title: 'Urban Shadows', author: 'Marcus Thorne', color: '#fafafa' },
-        { id: '3', title: 'Neon Dreams', author: 'Sarah Jenkins', color: '#f0f0f0' },
-    ];
+    const [featuredBooks, setFeaturedBooks] = useState([]);
+
+    useEffect(() => {
+        // In a real app, use the api.js helper. 
+        // For simplicity in this demo, accessing the endpoint directly.
+        fetch('http://localhost:3000/api/books')
+            .then(res => res.json())
+            .then(data => {
+                // Filter client-side or add ?featured=true query param to API
+                setFeaturedBooks(data.filter(b => b.is_featured));
+            })
+            .catch(err => console.error("Failed to fetch books", err));
+    }, []);
 
     return (
-        <ScrollView contentContainerStyle={{ padding: 20, backgroundColor: '#fff', minHeight: '100%' }}>
+        <ScrollView contentContainerStyle={{ padding: 20, backgroundColor: '#F9F7F1', minHeight: '100%' }}>
             <Stack.Screen options={{ headerShown: false }} />
 
             <AnimatedEntry>
@@ -40,7 +49,7 @@ export default function Page() {
                                     id={book.id}
                                     title={book.title}
                                     author={book.author}
-                                    coverColor={book.color}
+                                    coverColor={book.cover_color}
                                 />
                             </AnimatedEntry>
                         </View>

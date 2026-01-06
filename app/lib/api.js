@@ -13,7 +13,7 @@ const getBaseUrl = () => {
     return `http://${ip}:3000`;
 };
 
-const API_URL = getBaseUrl();
+export const API_URL = getBaseUrl();
 
 export const fetchUsers = async () => {
     try {
