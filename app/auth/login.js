@@ -3,6 +3,7 @@ import { Stack, useRouter } from 'expo-router';
 import { useState } from 'react';
 import AnimatedEntry from '../../components/AnimatedEntry';
 import { API_URL } from '../lib/api'; // Corrected path
+import AsyncStorage from '@react-native-async-storage/async-storage';
 
 export default function Login() {
     const router = useRouter();
@@ -30,9 +31,13 @@ export default function Login() {
                 throw new Error(data.error || 'Login failed');
             }
 
-            // Success! In a real app, store data.token in SecureStore
+            // Success! Store data.token in AsyncStorage
             console.log('Logged in!', data.token);
-            router.replace('/');
+            await AsyncStorage.setItem('userToken', data.token);
+            if (data.user) {
+                await AsyncStorage.setItem('userData', JSON.stringify(data.user));
+            }
+            router.replace('/dashboard');
         } catch (err) {
             setError(err.message);
         } finally {

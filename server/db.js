@@ -1,7 +1,7 @@
 const { Pool } = require('pg');
 
 // Use the local connection string provided by the user
-const connectionString = process.env.DATABASE_URL || 'postgres://joe.eagan@127.0.0.1:5432/inkplots';
+const connectionString = process.env.DATABASE_URL || 'postgres://joe.eagan@127.0.0.1:5432/inkplots'; // fallback for safety, though env is preferred
 
 const pool = new Pool({
     connectionString,
