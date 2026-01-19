@@ -4,6 +4,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useTheme } from '../lib/theme';
+import HeaderProfile from './HeaderProfile';
 
 const QUOTES = [
     "“The ink dries, but the story breathes forever.”",
@@ -18,7 +19,6 @@ export default function Hero() {
     const [quoteIndex, setQuoteIndex] = useState(0);
     const [isLargeScreen, setIsLargeScreen] = useState(false);
     const [isLoggedIn, setIsLoggedIn] = useState(false);
-    const [showMenu, setShowMenu] = useState(false);
     const insets = useSafeAreaInsets();
     const styles = getStyles(theme);
 
@@ -88,25 +88,7 @@ export default function Hero() {
 
                 <View style={styles.authContainer}>
                     {isLoggedIn ? (
-                        <View style={{ position: 'relative', zIndex: 100 }}>
-                            <TouchableOpacity onPress={() => setShowMenu(!showMenu)} style={styles.profileBtn}>
-                                <View style={styles.avatar}>
-                                    <Text style={styles.avatarText}>IP</Text>
-                                </View>
-                            </TouchableOpacity>
-
-                            {showMenu && (
-                                <View style={styles.dropdownMenu}>
-                                    <TouchableOpacity onPress={() => { setShowMenu(false); router.push('/dashboard'); }} style={styles.menuItem}>
-                                        <Text style={styles.menuText}>Account</Text>
-                                    </TouchableOpacity>
-                                    <View style={styles.menuDivider} />
-                                    <TouchableOpacity onPress={handleSignOut} style={styles.menuItem}>
-                                        <Text style={[styles.menuText, { color: 'red' }]}>Sign Out</Text>
-                                    </TouchableOpacity>
-                                </View>
-                            )}
-                        </View>
+                        <HeaderProfile />
                     ) : (
                         <>
                             <Link href="/auth/login" asChild>
@@ -183,6 +165,7 @@ export default function Hero() {
 }
 
 function AnimatedQuoteText({ quote }) {
+    const { theme } = useTheme();
     const fadeAnim = useState(new Animated.Value(0))[0];
 
     useEffect(() => {
@@ -205,7 +188,13 @@ function AnimatedQuoteText({ quote }) {
 
     return (
         <Animated.Text
-            style={[styles.quoteText, { opacity: fadeAnim }]}
+            style={[{
+                fontFamily: 'serif',
+                fontSize: 16,
+                fontStyle: 'italic',
+                color: theme.text,
+                lineHeight: 24,
+            }, { opacity: fadeAnim }]}
         >
             {quote}
         </Animated.Text>

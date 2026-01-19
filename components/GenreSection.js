@@ -72,13 +72,13 @@ export default function GenreSection({ title, books, getImageUrl, delay, hideTit
                 {/* Floating Navigation Buttons */}
                 {canScrollLeft && (
                     <Pressable onPress={() => scroll('left')} style={[styles.navButton, { left: 0 }]}>
-                        <ChevronLeft color="#333" size={24} />
+                        <ChevronLeft color={theme.text} size={24} />
                     </Pressable>
                 )}
 
                 {canScrollRight && (
                     <Pressable onPress={() => scroll('right')} style={[styles.navButton, { right: 0 }]}>
-                        <ChevronRight color="#333" size={24} />
+                        <ChevronRight color={theme.text} size={24} />
                     </Pressable>
                 )}
             </View>

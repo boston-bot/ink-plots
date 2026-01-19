@@ -5,20 +5,28 @@
         "scheme": "ink-plots",
         "version": "1.0.0",
         "orientation": "portrait",
-        "userInterfaceStyle": "light",
+        "userInterfaceStyle": "dark",
+        "backgroundColor": "#121212",
+        "splash": {
+            "image": "./assets/splash.png",
+            "resizeMode": "contain",
+            "backgroundColor": "#121212"
+        },
         "assetBundlePatterns": [
             "**/*"
         ],
         "ios": {
-            "supportsTablet": true
+            "supportsTablet": true,
+            "backgroundColor": "#121212"
         },
         "android": {
             "adaptiveIcon": {
-                "backgroundColor": "#ffffff"
+                "backgroundColor": "#121212"
             }
         },
         "web": {
-            "bundler": "metro"
+            "bundler": "metro",
+            "backgroundColor": "#F9F7F1"
         }
     }
 }

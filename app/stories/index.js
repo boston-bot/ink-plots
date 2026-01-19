@@ -3,15 +3,18 @@ import { Stack, useRouter } from 'expo-router';
 import { useState, useEffect } from 'react';
 import { API_URL } from '../../lib/api';
 import { Filter } from 'lucide-react-native';
-import HeaderProfile from '../../components/HeaderProfile';
+import CustomHeader from '../../components/CustomHeader';
 import FeaturedStory from '../../components/FeaturedStory';
 import StoryCard from '../../components/StoryCard';
 import SidebarFilters from '../../components/SidebarFilters';
+import { useTheme } from '../../lib/theme';
 
 export default function StoriesPage() {
     const router = useRouter();
     const { width } = useWindowDimensions();
     const isLargeScreen = width > 768;
+    const { theme } = useTheme();
+    const styles = getStyles(theme);
 
     const [stories, setStories] = useState([]);
     const [loading, setLoading] = useState(true);
@@ -69,25 +72,17 @@ export default function StoriesPage() {
 
     if (loading) {
         return (
-            <View style={{ flex: 1, justifyContent: 'center', backgroundColor: '#F9F7F1' }}>
-                <ActivityIndicator size="large" color="#FF6B35" />
+            <View style={{ flex: 1, justifyContent: 'center', backgroundColor: theme.background }}>
+                <ActivityIndicator size="large" color={theme.primary} />
             </View>
         );
     }
 
     return (
         <View style={styles.container}>
-            <Stack.Screen options={{
-                headerTitle: () => (
-                    <TouchableOpacity onPress={() => router.replace('/')}>
-                        <Text style={{ fontFamily: 'serif', fontSize: 20, fontWeight: 'bold' }}>The Ink Plots</Text>
-                    </TouchableOpacity>
-                ),
-                headerTitleAlign: 'center',
-                headerRight: () => <HeaderProfile />,
-                headerShadowVisible: false,
-                headerStyle: { backgroundColor: '#F9F7F1' }
-            }} />
+            <Stack.Screen options={{ headerShown: false }} />
+
+            <CustomHeader />
 
             <ScrollView contentContainerStyle={styles.scrollContent}>
                 {/* Page Header */}
@@ -101,7 +96,7 @@ export default function StoriesPage() {
                             style={styles.mobileFilterBtn}
                             onPress={() => setShowMobileFilters(true)}
                         >
-                            <Filter size={20} color="#333" />
+                            <Filter size={20} color={theme.text} />
                             <Text style={styles.filterBtnText}>Filter</Text>
                         </TouchableOpacity>
                     )}
@@ -192,10 +187,10 @@ export default function StoriesPage() {
     );
 }
 
-const styles = StyleSheet.create({
+const getStyles = (theme) => StyleSheet.create({
     container: {
         flex: 1,
-        backgroundColor: '#F9F7F1',
+        backgroundColor: theme.background,
     },
     scrollContent: {
         paddingBottom: 40,
@@ -211,11 +206,11 @@ const styles = StyleSheet.create({
         fontSize: 32,
         fontWeight: 'bold',
         fontFamily: 'serif',
-        color: '#222',
+        color: theme.text,
     },
     pageSubtitle: {
         fontSize: 16,
-        color: '#666',
+        color: theme.textSecondary,
         fontStyle: 'italic',
         fontFamily: 'serif',
         marginTop: 4,
@@ -224,17 +219,17 @@ const styles = StyleSheet.create({
         flexDirection: 'row',
         alignItems: 'center',
         gap: 6,
-        backgroundColor: '#fff',
+        backgroundColor: theme.surface,
         paddingHorizontal: 16,
         paddingVertical: 10,
         borderRadius: 8,
         borderWidth: 1,
-        borderColor: '#DDD',
+        borderColor: theme.border,
     },
     filterBtnText: {
         fontSize: 14,
         fontWeight: '600',
-        color: '#333',
+        color: theme.text,
     },
     twoColumn: {
         flexDirection: 'row',
@@ -266,14 +261,14 @@ const styles = StyleSheet.create({
     },
     emptyText: {
         fontSize: 16,
-        color: '#666',
+        color: theme.textSecondary,
         fontFamily: 'serif',
         marginBottom: 16,
     },
     resetBtn: {
         paddingHorizontal: 20,
         paddingVertical: 10,
-        backgroundColor: '#FF6B35',
+        backgroundColor: theme.primary,
         borderRadius: 8,
     },
     resetText: {
@@ -286,7 +281,7 @@ const styles = StyleSheet.create({
         justifyContent: 'flex-end',
     },
     modalContent: {
-        backgroundColor: '#F9F7F1',
+        backgroundColor: theme.background,
         borderTopLeftRadius: 20,
         borderTopRightRadius: 20,
         padding: 20,

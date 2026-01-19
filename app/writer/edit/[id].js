@@ -2,9 +2,11 @@ import { View, Text, ScrollView, TextInput, TouchableOpacity, StyleSheet, Activi
 import { Stack, useRouter, useLocalSearchParams } from 'expo-router';
 import { useState, useEffect, useRef } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { Save, Send, Upload, ArrowLeft } from 'lucide-react-native';
-import HeaderProfile from '../../../components/HeaderProfile';
-import { getStory, updateStory, publishStory } from '../../../lib/api';
+import { Save, Send, Upload, FileText } from 'lucide-react-native';
+import CustomHeader from '../../../components/CustomHeader';
+import { getStory, updateStory, publishStory, uploadFile, parseFile } from '../../../lib/api';
+import * as DocumentPicker from 'expo-document-picker';
+import { useTheme } from '../../../lib/theme';
 
 const GENRES = ['Sci-Fi', 'Thriller', 'Drama', 'Fantasy', 'Romance', 'Mystery', 'Horror', 'Adventure'];
 
@@ -13,11 +15,16 @@ export default function StoryEditor() {
     const { id } = useLocalSearchParams();
     const { width } = useWindowDimensions();
     const isLargeScreen = width > 1024;
+    const { theme } = useTheme();
+    const styles = getStyles(theme);
 
     const [story, setStory] = useState(null);
     const [loading, setLoading] = useState(true);
     const [saving, setSaving] = useState(false);
     const [lastSaved, setLastSaved] = useState(null);
+    const [uploading, setUploading] = useState(false);
+
+    const titleRef = useRef(null);
 
     const saveTimeout = useRef(null);
 
@@ -113,24 +120,15 @@ export default function StoryEditor() {
         );
     }
 
+    const isDark = Platform.OS !== 'web';
+    const headerTextColor = isDark ? '#FFFFFF' : '#000000';
+    const headerBgColor = isDark ? '#121212' : '#F9F7F1';
+
     return (
         <View style={styles.container}>
-            <Stack.Screen options={{
-                headerTitle: () => (
-                    <TouchableOpacity onPress={() => router.replace('/')}>
-                        <Text style={{ fontFamily: 'serif', fontSize: 20, fontWeight: 'bold' }}>The Ink Plots</Text>
-                    </TouchableOpacity>
-                ),
-                headerTitleAlign: 'center',
-                headerLeft: () => (
-                    <TouchableOpacity onPress={() => router.push('/writer')} style={{ marginLeft: 10 }}>
-                        <ArrowLeft size={24} color="#000" />
-                    </TouchableOpacity>
-                ),
-                headerRight: () => <HeaderProfile />,
-                headerShadowVisible: false,
-                headerStyle: { backgroundColor: '#F9F7F1' }
-            }} />
+            <Stack.Screen options={{ headerShown: false }} />
+
+            <CustomHeader />
 
             <ScrollView contentContainerStyle={styles.content}>
                 <View style={isLargeScreen ? styles.threePanel : styles.singlePanel}>
@@ -289,16 +287,16 @@ export default function StoryEditor() {
     );
 }
 
-const styles = StyleSheet.create({
+const getStyles = (theme) => StyleSheet.create({
     container: {
         flex: 1,
-        backgroundColor: '#F9F7F1',
+        backgroundColor: theme.background,
     },
     loader: {
         flex: 1,
         justifyContent: 'center',
         alignItems: 'center',
-        backgroundColor: '#F9F7F1',
+        backgroundColor: theme.background,
     },
     content: {
         padding: 20,
