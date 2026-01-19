@@ -1,8 +1,9 @@
-import { View, Text, Pressable, StyleSheet, Image, Dimensions, TouchableOpacity } from 'react-native';
+import { View, Text, Pressable, StyleSheet, Image, Dimensions, TouchableOpacity, Animated } from 'react-native';
 import { Link, useRouter, useFocusEffect } from 'expo-router';
 import { useState, useEffect, useCallback } from 'react';
-import Animated, { FadeIn, FadeOut } from 'react-native-reanimated';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { useTheme } from '../lib/theme';
 
 const QUOTES = [
     "“The ink dries, but the story breathes forever.”",
@@ -13,10 +14,13 @@ const QUOTES = [
 
 export default function Hero() {
     const router = useRouter();
+    const { theme } = useTheme();
     const [quoteIndex, setQuoteIndex] = useState(0);
     const [isLargeScreen, setIsLargeScreen] = useState(false);
     const [isLoggedIn, setIsLoggedIn] = useState(false);
     const [showMenu, setShowMenu] = useState(false);
+    const insets = useSafeAreaInsets();
+    const styles = getStyles(theme);
 
     useFocusEffect(
         useCallback(() => {
@@ -24,9 +28,7 @@ export default function Hero() {
         }, [])
     );
 
-    useEffect(() => {
-        checkLogin();
-    }, []);
+    // ... (logic remains same)
 
     const checkLogin = async () => {
         try {
@@ -59,18 +61,29 @@ export default function Hero() {
     }, []);
 
     return (
-        <View style={styles.container}>
+        <View style={[styles.container, { paddingTop: insets.top }]}>
             <View style={styles.header}>
                 <View style={styles.leftSection}>
                     <View style={styles.branding}>
-                        <Text style={styles.logo}>Ink Plots</Text>
+                        <Text style={styles.logo}>The Ink Plots</Text>
                     </View>
-                    <View style={styles.navLinks}>
-                        <Link href="/" asChild><Pressable><Text style={styles.navLink}>Books</Text></Pressable></Link>
-                        <Pressable><Text style={styles.navLink}>Read Stories</Text></Pressable>
-                        <Pressable><Text style={styles.navLink}>About</Text></Pressable>
-                        <Pressable><Text style={styles.navLink}>Contact</Text></Pressable>
-                    </View>
+                    {isLargeScreen && (
+                        <View style={styles.navLinks}>
+                            <Link href="/library" asChild><Pressable><Text style={styles.navLink}>Library</Text></Pressable></Link>
+                            <Link href="/stories" asChild><Pressable><Text style={styles.navLink}>Stories</Text></Pressable></Link>
+                            <Pressable onPress={() => {
+                                if (isLoggedIn) {
+                                    router.push('/writer');
+                                } else {
+                                    router.push('/auth/login?redirect=/writer');
+                                }
+                            }}>
+                                <Text style={styles.navLink}>Start Writing</Text>
+                            </Pressable>
+                            <Pressable><Text style={styles.navLink}>About</Text></Pressable>
+                            <Pressable><Text style={styles.navLink}>Contact</Text></Pressable>
+                        </View>
+                    )}
                 </View>
 
                 <View style={styles.authContainer}>
@@ -109,6 +122,34 @@ export default function Hero() {
                 </View>
             </View>
 
+            {/* Mobile Navigation - Only show on small screens */}
+            {!isLargeScreen && (
+                <View style={styles.mobileNav}>
+                    <Link href="/library" asChild>
+                        <Pressable style={styles.mobileNavLink}>
+                            <Text style={styles.mobileNavText}>Library</Text>
+                        </Pressable>
+                    </Link>
+                    <Link href="/stories" asChild>
+                        <Pressable style={styles.mobileNavLink}>
+                            <Text style={styles.mobileNavText}>Stories</Text>
+                        </Pressable>
+                    </Link>
+                    <Pressable
+                        style={styles.mobileNavLink}
+                        onPress={() => {
+                            if (isLoggedIn) {
+                                router.push('/writer');
+                            } else {
+                                router.push('/auth/login?redirect=/writer');
+                            }
+                        }}
+                    >
+                        <Text style={styles.mobileNavText}>Start Writing</Text>
+                    </Pressable>
+                </View>
+            )}
+
             <View style={[styles.content, isLargeScreen && styles.contentRow]}>
                 <View style={[styles.textContent, isLargeScreen && styles.textContentLarge]}>
                     <Text style={styles.headline}>
@@ -133,14 +174,7 @@ export default function Hero() {
                         resizeMode="cover"
                     />
                     <View style={styles.quoteContainer}>
-                        <Animated.Text
-                            key={quoteIndex}
-                            entering={FadeIn.duration(1000)}
-                            exiting={FadeOut.duration(1000)}
-                            style={styles.quoteText}
-                        >
-                            {QUOTES[quoteIndex]}
-                        </Animated.Text>
+                        <AnimatedQuoteText quote={QUOTES[quoteIndex]} />
                     </View>
                 </View>
             </View>
@@ -148,7 +182,37 @@ export default function Hero() {
     );
 }
 
-const styles = StyleSheet.create({
+function AnimatedQuoteText({ quote }) {
+    const fadeAnim = useState(new Animated.Value(0))[0];
+
+    useEffect(() => {
+        fadeAnim.setValue(0);
+        Animated.sequence([
+            Animated.timing(fadeAnim, {
+                toValue: 1,
+                duration: 1000,
+                // useNativeDriver: true, // Text opacity often requires false on some RN versions if not layout-only, but true is preferred for opacity
+                useNativeDriver: true,
+            }),
+            Animated.delay(3000),
+            Animated.timing(fadeAnim, {
+                toValue: 0,
+                duration: 1000,
+                useNativeDriver: true,
+            })
+        ]).start();
+    }, [quote]);
+
+    return (
+        <Animated.Text
+            style={[styles.quoteText, { opacity: fadeAnim }]}
+        >
+            {quote}
+        </Animated.Text>
+    );
+}
+
+const getStyles = (theme) => StyleSheet.create({
     container: {
         marginBottom: 60,
         marginTop: 20,
@@ -163,7 +227,7 @@ const styles = StyleSheet.create({
         alignItems: 'center',
         marginBottom: 60,
         borderBottomWidth: 1,
-        borderBottomColor: '#000',
+        borderBottomColor: theme.border,
         paddingBottom: 20,
         zIndex: 100, // Ensure header is on top for dropdown
     },
@@ -171,6 +235,7 @@ const styles = StyleSheet.create({
         fontFamily: 'serif',
         fontSize: 24,
         fontWeight: 'bold',
+        color: theme.text,
     },
     authContainer: {
         flexDirection: 'row',
@@ -184,12 +249,12 @@ const styles = StyleSheet.create({
         width: 40,
         height: 40,
         borderRadius: 20,
-        backgroundColor: '#333',
+        backgroundColor: theme.surfaceVariant,
         alignItems: 'center',
         justifyContent: 'center',
     },
     avatarText: {
-        color: '#fff',
+        color: theme.text,
         fontWeight: 'bold',
     },
     dropdownMenu: {
@@ -197,16 +262,16 @@ const styles = StyleSheet.create({
         top: 50,
         right: 0,
         width: 150,
-        backgroundColor: '#fff',
+        backgroundColor: theme.surface,
         borderRadius: 8,
         padding: 5,
-        shadowColor: '#000',
+        shadowColor: theme.shadow,
         shadowOffset: { width: 0, height: 4 },
         shadowOpacity: 0.1,
         shadowRadius: 10,
         elevation: 5,
         borderWidth: 1,
-        borderColor: '#eee',
+        borderColor: theme.border,
     },
     menuItem: {
         padding: 12,
@@ -214,10 +279,11 @@ const styles = StyleSheet.create({
     menuText: {
         fontSize: 14,
         fontWeight: '500',
+        color: theme.text,
     },
     menuDivider: {
         height: 1,
-        backgroundColor: '#eee',
+        backgroundColor: theme.border,
         marginHorizontal: 5,
     },
     leftSection: {
@@ -233,7 +299,7 @@ const styles = StyleSheet.create({
     navLink: {
         fontFamily: 'serif',
         fontSize: 16,
-        color: '#444',
+        color: theme.textSecondary,
     },
     loginBtn: {
         padding: 8,
@@ -241,9 +307,10 @@ const styles = StyleSheet.create({
     loginText: {
         fontFamily: 'serif',
         fontSize: 16,
+        color: theme.text,
     },
     joinBtn: {
-        backgroundColor: '#000',
+        backgroundColor: theme.primary,
         paddingVertical: 10,
         paddingHorizontal: 20,
         borderRadius: 4,
@@ -278,11 +345,12 @@ const styles = StyleSheet.create({
         textAlign: 'center',
         marginBottom: 20,
         lineHeight: 56,
+        color: theme.text,
     },
     subheadline: {
         fontFamily: 'serif',
         fontSize: 18,
-        color: '#666',
+        color: theme.textSecondary,
         textAlign: 'center',
         maxWidth: 600,
         lineHeight: 28,
@@ -290,13 +358,14 @@ const styles = StyleSheet.create({
     },
     ctaBtn: {
         borderBottomWidth: 1,
-        borderBottomColor: '#000',
+        borderBottomColor: theme.text,
         paddingBottom: 2,
     },
     ctaText: {
         fontFamily: 'serif',
         fontSize: 16,
         letterSpacing: 1,
+        color: theme.text,
     },
     visualContent: {
         width: '100%',
@@ -316,22 +385,41 @@ const styles = StyleSheet.create({
         position: 'absolute',
         bottom: -20,
         right: '10%', // Offset from right
-        backgroundColor: '#fff',
+        backgroundColor: theme.surface,
         padding: 20,
         maxWidth: 250,
-        shadowColor: '#000',
+        shadowColor: theme.shadow,
         shadowOffset: { width: 0, height: 4 },
         shadowOpacity: 0.1,
         shadowRadius: 10,
         elevation: 5,
         borderWidth: 1,
-        borderColor: '#eee',
+        borderColor: theme.border,
     },
     quoteText: {
         fontFamily: 'serif',
         fontSize: 16,
         fontStyle: 'italic',
-        color: '#333',
+        color: theme.text,
         lineHeight: 24,
+    },
+    mobileNav: {
+        flexDirection: 'row',
+        justifyContent: 'center',
+        gap: 20,
+        paddingVertical: 16,
+        borderBottomWidth: 1,
+        borderBottomColor: theme.border,
+        marginBottom: 20,
+    },
+    mobileNavLink: {
+        paddingHorizontal: 20,
+        paddingVertical: 8,
+    },
+    mobileNavText: {
+        fontFamily: 'serif',
+        fontSize: 16,
+        fontWeight: '600',
+        color: theme.textSecondary,
     },
 });

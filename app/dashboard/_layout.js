@@ -1,16 +1,19 @@
-import { View, Text, StyleSheet, ScrollView, Dimensions, Image, Pressable } from 'react-native';
+import { View, Text, StyleSheet, ScrollView, Dimensions, Image, Pressable, TouchableOpacity } from 'react-native';
 import { Slot, Link, useRouter } from 'expo-router';
 import { LayoutDashboard, BookOpen, History, PenTool, Star, Bookmark, XCircle, Settings, LogOut } from 'lucide-react-native';
 import { useState, useEffect } from 'react';
+import HeaderProfile from '../../components/HeaderProfile';
+import { useTheme } from '../../lib/theme';
 
-const SidebarItem = ({ icon: Icon, label, active, onPress }) => (
+const SidebarItem = ({ icon: Icon, label, active, onPress, theme }) => (
     <Pressable style={[styles.navItem, active && styles.navItemActive]} onPress={onPress}>
-        <Icon size={20} color={active ? '#000' : '#666'} />
+        <Icon size={20} color={active ? theme.text : theme.textSecondary} />
         <Text style={[styles.navLabel, active && styles.navLabelActive]}>{label}</Text>
     </Pressable>
 );
 
 export default function DashboardLayout() {
+    const { theme } = useTheme();
     const router = useRouter();
     const [activeTab, setActiveTab] = useState('Dashboard');
     const [isLargeScreen, setIsLargeScreen] = useState(Dimensions.get('window').width > 1024);
@@ -34,9 +37,33 @@ export default function DashboardLayout() {
         { icon: Settings, label: 'Settings' },
     ];
 
-    const handleLogout = () => {
-        // Clear token logic here
-        router.replace('/auth/login');
+    const handleLogout = async () => {
+        // Confirmation before logging out
+        const confirm = await new Promise((resolve) => {
+            // Web confirm
+            if (Dimensions.get('window').width > 1024) { // Simple check for web/large screen, or Platform.OS === 'web'
+                const ans = window.confirm("Are you sure you want to log out?");
+                resolve(ans);
+            } else {
+                // Mobile Alert
+                const { Alert } = require('react-native');
+                Alert.alert(
+                    "Log Out",
+                    "Are you sure you want to log out?",
+                    [
+                        { text: "Cancel", onPress: () => resolve(false), style: "cancel" },
+                        { text: "Log Out", onPress: () => resolve(true), style: "destructive" }
+                    ]
+                );
+            }
+        });
+
+        if (confirm) {
+            const AsyncStorage = require('@react-native-async-storage/async-storage').default;
+            await AsyncStorage.removeItem('userToken');
+            await AsyncStorage.removeItem('userData');
+            router.replace('/auth/login');
+        }
     };
 
     if (!isLargeScreen) {
@@ -44,7 +71,7 @@ export default function DashboardLayout() {
         return (
             <View style={styles.mobileContainer}>
                 <View style={styles.mobileHeader}>
-                    <Text style={styles.logo}>Ink Plots</Text>
+                    <Text style={styles.logo}>The Ink Plots</Text>
                     <Pressable onPress={handleLogout}><LogOut size={24} color="#000" /></Pressable>
                 </View>
                 <Slot />
@@ -81,6 +108,7 @@ export default function DashboardLayout() {
                             label={item.label}
                             active={activeTab === item.label}
                             onPress={() => setActiveTab(item.label)}
+                            theme={theme}
                         />
                     ))}
                 </View>
@@ -91,10 +119,20 @@ export default function DashboardLayout() {
                 </Pressable>
             </View>
 
-            {/* Main Content */}
-            <ScrollView style={styles.mainContent} showsVerticalScrollIndicator={false}>
-                <Slot />
-            </ScrollView>
+            {/* Main Content with Header */}
+            <View style={{ flex: 1 }}>
+                {/* Top Header */}
+                <View style={styles.topHeader}>
+                    <TouchableOpacity onPress={() => router.push('/')}>
+                        <Text style={styles.headerLogo}>The Ink Plots</Text>
+                    </TouchableOpacity>
+                    <HeaderProfile />
+                </View>
+
+                <ScrollView style={styles.mainContent} showsVerticalScrollIndicator={false}>
+                    <Slot />
+                </ScrollView>
+            </View>
 
             {/* Right Sidebar */}
             <View style={styles.rightSidebar}>
@@ -163,6 +201,22 @@ const styles = StyleSheet.create({
     mainContent: {
         flex: 1,
         padding: 40,
+    },
+    topHeader: {
+        flexDirection: 'row',
+        justifyContent: 'space-between',
+        alignItems: 'center',
+        paddingHorizontal: 40,
+        paddingVertical: 16,
+        backgroundColor: '#fff',
+        borderBottomWidth: 1,
+        borderColor: '#eee',
+    },
+    headerLogo: {
+        fontFamily: 'serif',
+        fontSize: 20,
+        fontWeight: 'bold',
+        color: '#000',
     },
     logo: {
         fontFamily: 'serif',

@@ -4,11 +4,13 @@ import { Stack } from 'expo-router';
 import Hero from '../components/Hero';
 import AnimatedEntry from '../components/AnimatedEntry';
 import GenreSection from '../components/GenreSection';
+import { useTheme } from '../lib/theme';
 
-import { API_URL } from './lib/api';
+import { API_URL } from '../lib/api';
 
 export default function Page() {
     const [featuredBooks, setFeaturedBooks] = useState([]);
+    const { theme } = useTheme();
 
     useEffect(() => {
         fetch(`${API_URL}/api/books`)
@@ -39,8 +41,8 @@ export default function Page() {
     }, {});
 
     return (
-        <ScrollView contentContainerStyle={{ paddingBottom: 40, backgroundColor: '#F9F7F1', minHeight: '100%' }}>
-            <Stack.Screen options={{ headerShown: false }} />
+        <ScrollView contentContainerStyle={{ paddingBottom: 40, backgroundColor: theme.background, minHeight: '100%' }}>
+            <Stack.Screen options={{ headerShown: false, title: 'Home' }} />
 
             <AnimatedEntry>
                 <Hero />

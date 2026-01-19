@@ -1,43 +1,132 @@
-import { View, Text, ScrollView, Image, TouchableOpacity, ActivityIndicator, Alert } from 'react-native';
+import { View, Text, ScrollView, Image as RNImage, TouchableOpacity, ActivityIndicator, Alert, StatusBar } from 'react-native';
 import { useLocalSearchParams, Stack, useRouter } from 'expo-router';
 import { useEffect, useState, useRef } from 'react';
-import { getBook, subscribe, API_URL, startReading, updateProgress, getReadingStatus } from '../lib/api';
+import { ChevronLeft } from 'lucide-react-native';
+import HeaderProfile from '../../components/HeaderProfile';
+import { getBook, subscribe, API_URL, startReading, updateProgress, getReadingStatus, returnBook } from '../../lib/api';
+import { saveBookToOffline, getOfflineBook, removeBookFromOffline, isBookOffline, saveOfflineProgress, getOfflineProgress, removeOfflineProgress } from '../../lib/offline';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { LinearGradient } from 'expo-linear-gradient';
+import ReaderSettings from '../../components/ReaderSettings';
+
+const THEMES = {
+    light: { bg: '#ffffff', text: '#222222', meta: '#666666' },
+    sepia: { bg: '#FBF0D9', text: '#5F4B32', meta: '#8B735B' },
+    dark: { bg: '#1a1a1a', text: '#cccccc', meta: '#888888' },
+};
 
 export default function Reader() {
     const { id } = useLocalSearchParams();
     const router = useRouter();
+
+    // Book & State
     const [book, setBook] = useState(null);
+    const [chapters, setChapters] = useState([]);
+    const [activeChapterIndex, setActiveChapterIndex] = useState(0);
+
+    // Appearance
+    const [showSettings, setShowSettings] = useState(false);
+    const [settings, setSettings] = useState({
+        theme: 'light',
+        fontFamily: 'serif',
+        fontSize: 18,
+    });
+
+    // Metadata
     const [loading, setLoading] = useState(true);
     const [upgrading, setUpgrading] = useState(false);
     const [readingStatus, setReadingStatus] = useState(null);
     const [isStarted, setIsStarted] = useState(false);
+    const [isDownloaded, setIsDownloaded] = useState(false);
+
     const scrollRef = useRef(null);
     const lastScrollUpdate = useRef(0);
 
     useEffect(() => {
         loadBook();
+        loadSettings();
     }, [id]);
+
+    const loadSettings = async () => {
+        try {
+            const saved = await AsyncStorage.getItem('reader_settings');
+            if (saved) setSettings(JSON.parse(saved));
+        } catch (e) {
+            console.log('Failed to load settings');
+        }
+    };
+
+    const updateSettings = async (newSettings) => {
+        setSettings(newSettings);
+        await AsyncStorage.setItem('reader_settings', JSON.stringify(newSettings));
+    };
 
     const loadBook = async () => {
         setLoading(true);
         const token = await AsyncStorage.getItem('userToken');
 
-        // Parallel checks
-        const [bookData, statusData] = await Promise.all([
-            getBook(id, token),
-            getReadingStatus(id, token)
-        ]);
+        try {
+            const [bookData, statusData, offlineParams, localProgress] = await Promise.all([
+                getBook(id, token),
+                getReadingStatus(id, token),
+                isBookOffline(id),
+                getOfflineProgress(id)
+            ]);
 
-        setBook(bookData);
-        setReadingStatus(statusData);
+            // 1. Handle Structure (Book + Chapters)
+            if (bookData) {
+                setBook(bookData);
+                if (bookData.chapters && bookData.chapters.length > 0) {
+                    setChapters(bookData.chapters);
+                } else if (bookData.content) {
+                    // Backwards compatibility / Single chapter
+                    setChapters([{ id: 'mock', title: 'Chapter 1', content: bookData.content, sequence_number: 1 }]);
+                }
+            } else {
+                // Offline Fallback
+                const offlineBook = await getOfflineBook(id);
+                if (offlineBook) {
+                    setBook(offlineBook);
+                    setChapters(offlineBook.chapters || [{ title: 'Chapter 1', content: offlineBook.content }]);
+                }
+            }
 
-        if (statusData) {
-            setIsStarted(true);
+            // 2. Handle Status (Progress)
+            const mergedStatus = statusData || localProgress;
+            setReadingStatus(mergedStatus);
+            setIsDownloaded(offlineParams);
+
+            if (mergedStatus) {
+                setIsStarted(true);
+            }
+
+            // 3. Restore Chapter Position
+            if (mergedStatus && mergedStatus.current_chapter_index !== undefined) {
+                setActiveChapterIndex(mergedStatus.current_chapter_index);
+            } else {
+                setActiveChapterIndex(0);
+            }
+
+        } catch (e) {
+            console.error("Load Book Error", e);
+            // Final Fallback
+            const offlineBook = await getOfflineBook(id);
+            const localProgress = await getOfflineProgress(id);
+
+            if (offlineBook) {
+                setBook(offlineBook);
+                setChapters(offlineBook.chapters || [{ title: 'Chapter 1', content: offlineBook.content }]);
+                setReadingStatus(localProgress);
+                setIsDownloaded(true);
+                setIsStarted(true);
+
+                if (localProgress && localProgress.current_chapter_index) {
+                    setActiveChapterIndex(localProgress.current_chapter_index);
+                }
+            }
+        } finally {
+            setLoading(false);
         }
-
-        setLoading(false);
     };
 
     const getImageUrl = (url) => {
@@ -54,11 +143,59 @@ export default function Reader() {
             const token = await AsyncStorage.getItem('userToken');
             if (!token) return router.push('/auth/login');
 
-            await startReading(id, token);
+            // 1. Register on Server
+            try {
+                await startReading(id, token);
+            } catch (err) {
+                console.warn("Server sync failed, proceeding locally if possible", err);
+            }
+
+            // 2. Save Offline
+            if (book) {
+                const saved = await saveBookToOffline(book);
+                if (saved) setIsDownloaded(true);
+            }
+
             setIsStarted(true);
-            setReadingStatus({ current_position: 0 }); // Optimistic update
+            setReadingStatus({ current_position: 0 });
+            setActiveChapterIndex(0);
+
+            Alert.alert("Success", "Book checked out and downloaded for offline reading.");
+
         } catch (e) {
-            Alert.alert("Error", "Could not start reading session.");
+            console.error("Start Reading Fatal Error", e);
+            Alert.alert("Error", "Could not start reading session: " + e.message);
+        }
+    };
+
+    const handleNextChapter = async () => {
+        const nextIndex = activeChapterIndex + 1;
+        if (nextIndex < chapters.length) {
+            const nextChapter = chapters[nextIndex];
+
+            if (nextChapter.locked) {
+                Alert.alert("Locked", "This chapter is for Premium subscribers only. Please upgrade.");
+                return;
+            }
+
+            // Move to next
+            setActiveChapterIndex(nextIndex);
+            scrollRef.current?.scrollTo({ y: 0, animated: false });
+
+            // Save Progress (0% of next chapter)
+            await saveProgress(nextIndex, 0, 0);
+        } else {
+            Alert.alert("Finished", "You have reached the end of the book!");
+        }
+    };
+
+    const handlePrevChapter = async () => {
+        const prevIndex = activeChapterIndex - 1;
+        if (prevIndex >= 0) {
+            setActiveChapterIndex(prevIndex);
+            scrollRef.current?.scrollTo({ y: 0, animated: false });
+            // Should properly restore to bottom? For now top.
+            await saveProgress(prevIndex, 0, 0);
         }
     };
 
@@ -69,50 +206,44 @@ export default function Reader() {
         const scrollY = contentOffset.y;
         const totalHeight = contentSize.height - layoutMeasurement.height;
 
-        // Prevent negative progress
         if (totalHeight <= 0) return;
 
-        const progress = Math.min(1, Math.max(0, scrollY / totalHeight));
         const now = Date.now();
-
-        // Throttle updates: every 2 seconds
         if (now - lastScrollUpdate.current > 2000) {
-            lastScrollUpdate.current = now;
-            const token = await AsyncStorage.getItem('userToken');
-            if (token) {
-                // We use scroll Y as "position" for simplicity here
-                updateProgress(id, Math.floor(scrollY), Math.floor(totalHeight), progress, token);
-            }
+            await saveProgress(activeChapterIndex, scrollY, totalHeight);
         }
     };
 
-    const handleSubscribe = async () => {
-        setUpgrading(true);
-        try {
-            const token = await AsyncStorage.getItem('userToken');
-            if (!token) {
-                router.push('/auth/login');
-                return;
-            }
+    const saveProgress = async (chapterIndex, scrollY, totalHeight) => {
+        // Global Progress Logic
+        const chapterProgress = totalHeight > 0 ? scrollY / totalHeight : 0;
+        const totalChapters = chapters.length || 1;
 
-            const res = await subscribe(token);
-            if (res.token) {
-                await AsyncStorage.setItem('userToken', res.token);
-                await AsyncStorage.setItem('userData', JSON.stringify(res.user));
-                alert('Subscribed successfully! Content unlocked.');
-                loadBook();
-            }
-        } catch (e) {
-            alert(e.message);
-        } finally {
-            setUpgrading(false);
+        // (Index + Percent) / Total
+        const globalProgress = Math.min(1, Math.max(0, (chapterIndex + chapterProgress) / totalChapters));
+
+        lastScrollUpdate.current = Date.now();
+
+        const progressData = {
+            current_chapter_index: chapterIndex,
+            current_position: Math.floor(scrollY),
+            total_length: Math.floor(totalHeight),
+            progress: globalProgress
+        };
+
+        // 1. Save Local
+        await saveOfflineProgress(id, progressData);
+
+        // 2. Sync Server
+        const token = await AsyncStorage.getItem('userToken');
+        if (token) {
+            updateProgress(id, Math.floor(scrollY), Math.floor(totalHeight), globalProgress, token, chapterIndex);
         }
     };
 
-    // Restore scroll position
     const onContentSizeChange = (w, h) => {
-        if (readingStatus && readingStatus.current_position > 0 && scrollRef.current) {
-            // Only restore once
+        // Restore scroll IF we are on the same chapter as saved status
+        if (readingStatus && readingStatus.current_position > 0 && scrollRef.current && activeChapterIndex === readingStatus.current_chapter_index) {
             if (!scrollRef.current.restored) {
                 scrollRef.current.scrollTo({ y: readingStatus.current_position, animated: false });
                 scrollRef.current.restored = true;
@@ -120,80 +251,165 @@ export default function Reader() {
         }
     };
 
+    const handleSubscribe = async () => {
+        // ... (Same subscribe logic) ...
+        setUpgrading(true);
+        try {
+            const token = await AsyncStorage.getItem('userToken');
+            if (token) {
+                const res = await subscribe(token);
+                if (res.token) {
+                    await AsyncStorage.setItem('userToken', res.token);
+                    await AsyncStorage.setItem('userData', JSON.stringify(res.user));
+                    alert('Subscribed!');
+                    loadBook();
+                }
+            }
+        } catch (e) { alert(e.message); }
+        finally { setUpgrading(false); }
+    };
+
+    // Render helpers
     if (loading) return <View style={{ flex: 1, justifyContent: 'center' }}><ActivityIndicator /></View>;
-    if (!book) return <View style={{ flex: 1, justifyContent: 'center' }}><Text style={{ textAlign: 'center' }}>Book not found</Text></View>;
+    if (!book) return <View style={{ flex: 1, justifyContent: 'center' }}><Text>Book not found</Text></View>;
+
+    const activeChapter = chapters[activeChapterIndex] || {};
+    const theme = THEMES[settings.theme] || THEMES.light;
 
     return (
-        <ScrollView
-            ref={scrollRef}
-            contentContainerStyle={{ flexGrow: 1, backgroundColor: book.cover_color || '#fff', paddingBottom: 60 }}
-            onScroll={handleScroll}
-            scrollEventThrottle={16}
-            onContentSizeChange={onContentSizeChange}
-        >
-            <Stack.Screen options={{ title: book.title }} />
+        <View style={{ flex: 1, backgroundColor: theme.bg }}>
+            <StatusBar
+                barStyle={settings.theme === 'dark' ? 'light-content' : 'dark-content'}
+                backgroundColor={theme.bg}
+            />
 
-            {/* Header */}
-            <View style={{ padding: 20, paddingTop: 40, alignItems: 'center' }}>
-                <View style={{
-                    width: 120, height: 180, backgroundColor: '#eee',
-                    borderRadius: 8, elevation: 5, shadowColor: '#000', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.3, shadowRadius: 4,
-                    marginBottom: 20, overflow: 'hidden'
-                }}>
-                    {book.cover_image_url ? (
-                        <Image source={{ uri: getImageUrl(book.cover_image_url) }} style={{ width: '100%', height: '100%' }} />
-                    ) : (
-                        <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
-                            <Text style={{ fontSize: 30 }}>📖</Text>
-                        </View>
-                    )}
-                </View>
-                <Text style={{ fontSize: 24, fontWeight: 'bold', textAlign: 'center', marginBottom: 5 }}>{book.title}</Text>
-                <Text style={{ fontSize: 16, color: '#666', marginBottom: 10 }}>by {book.author}</Text>
-                {book.is_premium && <View style={{ backgroundColor: '#FFD700', paddingHorizontal: 8, paddingVertical: 4, borderRadius: 4 }}><Text style={{ fontSize: 12, fontWeight: 'bold' }}>PREMIUM</Text></View>}
-            </View>
-
-            {/* Start Action or Content */}
-            {!isStarted ? (
-                <View style={{ padding: 30, alignItems: 'center' }}>
-                    <Text style={{ textAlign: 'center', color: '#666', marginBottom: 30 }}>
-                        Ready to dive in? Start reading to track your progress and resume anytime.
-                    </Text>
+            <Stack.Screen options={{
+                title: activeChapter.title || book.title,
+                headerStyle: { backgroundColor: theme.bg },
+                headerTintColor: theme.text,
+                headerLeft: () => (
                     <TouchableOpacity
-                        onPress={handleStartReading}
-                        style={{ backgroundColor: '#333', paddingVertical: 15, paddingHorizontal: 40, borderRadius: 30 }}
+                        onPress={() => {
+                            if (router.canGoBack()) {
+                                router.back();
+                            } else {
+                                router.replace('/dashboard');
+                            }
+                        }}
+                        style={{ flexDirection: 'row', alignItems: 'center', marginLeft: -8, padding: 8 }}
                     >
-                        <Text style={{ color: '#fff', fontSize: 16, fontWeight: 'bold' }}>Start Reading</Text>
+                        <ChevronLeft color={theme.text} size={28} />
                     </TouchableOpacity>
-                </View>
-            ) : (
-                <View style={{ backgroundColor: '#fff', borderTopLeftRadius: 30, borderTopRightRadius: 30, padding: 30, minHeight: 500 }}>
-                    <Text style={{ fontSize: 18, lineHeight: 32, fontFamily: 'serif', color: '#333' }}>
-                        {book.content}
-                    </Text>
+                ),
+                headerRight: () => (
+                    <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                        <TouchableOpacity onPress={() => setShowSettings(true)} style={{ marginRight: 15, padding: 4 }}>
+                            <Text style={{ fontSize: 20, fontWeight: 'bold', color: theme.text }}>Aa</Text>
+                        </TouchableOpacity>
+                        <HeaderProfile />
+                    </View>
+                ),
+                headerBackVisible: false,
+                headerShadowVisible: false, // Cleaner look
+            }} />
 
-                    {/* Truncation / Upgrade Overlay */}
-                    {book.access_limited && (
-                        <View style={{ position: 'absolute', bottom: 0, left: 0, right: 0, height: 300, alignItems: 'center', justifyContent: 'flex-end', paddingBottom: 40 }}>
-                            <LinearGradient
-                                colors={['rgba(255,255,255,0)', 'rgba(255,255,255,0.9)', '#fff']}
-                                style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0 }}
-                            />
-                            <View style={{ alignItems: 'center', zIndex: 10, padding: 20 }}>
-                                <Text style={{ fontSize: 18, fontWeight: 'bold', marginBottom: 10, textAlign: 'center' }}>Keep Reading?</Text>
-                                <Text style={{ fontSize: 14, color: '#666', marginBottom: 20, textAlign: 'center' }}>Unlock this book and the entire library for just $3.99/mo.</Text>
+            <ReaderSettings
+                visible={showSettings}
+                onClose={() => setShowSettings(false)}
+                settings={settings}
+                onUpdate={updateSettings}
+            />
 
-                                <TouchableOpacity
-                                    onPress={handleSubscribe}
-                                    disabled={upgrading}
-                                    style={{ backgroundColor: '#000', paddingVertical: 15, paddingHorizontal: 40, borderRadius: 30 }}>
-                                    {upgrading ? <ActivityIndicator color="#fff" /> : <Text style={{ color: '#fff', fontSize: 16, fontWeight: 'bold' }}>Subscribe Now</Text>}
+            <ScrollView
+                ref={scrollRef}
+                contentContainerStyle={{ flexGrow: 1, paddingBottom: 100 }}
+                style={{ backgroundColor: theme.bg }}
+                onScroll={handleScroll}
+                scrollEventThrottle={16}
+                onContentSizeChange={onContentSizeChange}
+            >
+                {/* Book Header (Cover/Title) - Contextual */}
+                {activeChapterIndex === 0 && (
+                    <View style={{ padding: 20, paddingTop: 40, alignItems: 'center' }}>
+                        <View style={{ width: 120, height: 180, backgroundColor: '#eee', borderRadius: 8, marginBottom: 20, elevation: 5 }}>
+                            {book.cover_image_url && <RNImage source={{ uri: getImageUrl(book.cover_image_url) }} style={{ width: '100%', height: '100%', borderRadius: 8 }} />}
+                        </View>
+                        <Text style={{ fontSize: 24, fontWeight: 'bold', textAlign: 'center', color: theme.text, fontFamily: settings.fontFamily }}>{book.title}</Text>
+                        <Text style={{ fontSize: 16, color: theme.meta, fontFamily: settings.fontFamily, marginTop: 5 }}>by {book.author}</Text>
+                    </View>
+                )}
+
+                {!isStarted ? (
+                    <View style={{ padding: 30, alignItems: 'center' }}>
+                        <TouchableOpacity onPress={handleStartReading} style={{ backgroundColor: theme.text, paddingVertical: 15, paddingHorizontal: 40, borderRadius: 30 }}>
+                            <Text style={{ color: theme.bg, fontSize: 16, fontWeight: 'bold' }}>Start Reading</Text>
+                        </TouchableOpacity>
+                    </View>
+                ) : (
+                    <View style={{ paddingHorizontal: 25, paddingVertical: 10 }}>
+
+                        {/* Chapter Header nav */}
+                        <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginBottom: 30, alignItems: 'center' }}>
+                            <Text style={{ color: theme.meta, fontSize: 12, textTransform: 'uppercase', letterSpacing: 1 }}>
+                                Chapter {activeChapterIndex + 1} of {chapters.length}
+                            </Text>
+                            <TouchableOpacity onPress={async () => {
+                                const token = await AsyncStorage.getItem('userToken');
+                                if (token) await returnBook(id, token);
+                                await removeBookFromOffline(id);
+                                await removeOfflineProgress(id);
+                                setIsStarted(false); setIsDownloaded(false); setReadingStatus(null);
+                            }}>
+                                <Text style={{ color: '#d9534f', fontSize: 12, fontWeight: 'bold' }}>RETURN BOOK</Text>
+                            </TouchableOpacity>
+                        </View>
+
+                        <Text style={{ fontSize: 28, fontWeight: 'bold', marginBottom: 30, fontFamily: settings.fontFamily, color: theme.text }}>{activeChapter.title}</Text>
+
+                        {activeChapter.locked ? (
+                            <View style={{ padding: 40, alignItems: 'center', backgroundColor: settings.theme === 'dark' ? '#333' : '#f9f9f9', borderRadius: 12 }}>
+                                <Text style={{ fontSize: 40 }}>🔒</Text>
+                                <Text style={{ fontSize: 18, fontWeight: 'bold', color: theme.text, marginTop: 10 }}>Chapter Locked</Text>
+                                <Text style={{ textAlign: 'center', marginVertical: 10, color: theme.meta }}>Premium content.</Text>
+                                <TouchableOpacity onPress={handleSubscribe} style={{ backgroundColor: theme.text, paddingHorizontal: 20, paddingVertical: 10, borderRadius: 20 }}>
+                                    <Text style={{ color: theme.bg, fontWeight: 'bold' }}>Unlock Now</Text>
                                 </TouchableOpacity>
                             </View>
+                        ) : (
+                            <Text style={{
+                                fontSize: settings.fontSize,
+                                lineHeight: settings.fontSize * 1.6,
+                                fontFamily: settings.fontFamily,
+                                color: theme.text,
+                                marginBottom: 40
+                            }}>
+                                {activeChapter.content}
+                            </Text>
+                        )}
+
+                        {/* Navigation Buttons */}
+                        <View style={{ flexDirection: 'row', justifyContent: 'space-between', borderTopWidth: 1, borderColor: settings.theme === 'dark' ? '#333' : '#eee', paddingTop: 30, marginTop: 20 }}>
+                            <TouchableOpacity
+                                onPress={handlePrevChapter}
+                                disabled={activeChapterIndex === 0}
+                                style={{ opacity: activeChapterIndex === 0 ? 0.3 : 1, padding: 10 }}
+                            >
+                                <Text style={{ fontSize: 16, color: theme.text, fontFamily: settings.fontFamily }}>← Previous</Text>
+                            </TouchableOpacity>
+
+                            <TouchableOpacity
+                                onPress={handleNextChapter}
+                                disabled={activeChapter.locked || activeChapterIndex >= chapters.length - 1}
+                                style={{ opacity: (activeChapterIndex >= chapters.length - 1) ? 0.3 : 1, padding: 10 }}
+                            >
+                                <Text style={{ fontSize: 16, fontWeight: 'bold', color: theme.text, fontFamily: settings.fontFamily }}>Next Chapter →</Text>
+                            </TouchableOpacity>
                         </View>
-                    )}
-                </View>
-            )}
-        </ScrollView>
+
+                    </View>
+                )}
+
+            </ScrollView>
+        </View>
     );
 }

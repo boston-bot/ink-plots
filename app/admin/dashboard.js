@@ -1,7 +1,7 @@
 import { View, Text, Switch, FlatList, ScrollView, Pressable } from 'react-native';
 import { Stack } from 'expo-router';
 import { useState, useEffect } from 'react';
-import { API_URL } from '../lib/api'; // We need to export this or move it
+import { API_URL } from '../../lib/api'; // We need to export this or move it
 
 export default function Dashboard() {
     const [books, setBooks] = useState([]);
