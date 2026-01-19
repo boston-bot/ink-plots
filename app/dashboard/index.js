@@ -1,9 +1,10 @@
-import { View, Text, StyleSheet, ScrollView, TouchableOpacity, ActivityIndicator, Pressable, Platform } from 'react-native';
+import { View, Text, StyleSheet, ScrollView, TouchableOpacity, ActivityIndicator, Pressable, Platform, Image } from 'react-native';
 import AnimatedEntry from '../../components/AnimatedEntry';
 import { useRouter, Link } from 'expo-router';
 import { useEffect, useState, useCallback } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { subscribe, getReadings, API_URL } from '../lib/api';
+import { subscribe, getReadings, API_URL } from '../../lib/api';
+import { getOfflineLibrary, getAllOfflineProgress } from '../../lib/offline';
 import { useFocusEffect } from '@react-navigation/native';
 
 export default function Dashboard() {
@@ -24,10 +25,44 @@ export default function Dashboard() {
 
         if (userData) setUser(JSON.parse(userData));
 
+        // 1. Fetch API Data
+        let apiReadings = [];
         if (token) {
-            const readingData = await getReadings(token);
-            setReadings(readingData);
+            apiReadings = await getReadings(token);
         }
+
+        // 2. Fetch Offline Data
+        const offlineBooks = await getOfflineLibrary();
+        const offlineProgress = await getAllOfflineProgress();
+
+        // 3. Merge Strategies
+        const readingMap = new Map();
+
+        // Add Offline first
+        offlineBooks.forEach(book => {
+            const progressEntry = offlineProgress.find(p => p.book_id == book.id);
+            readingMap.set(book.id, {
+                book_id: book.id,
+                title: book.title,
+                author: book.author,
+                cover_image_url: book.cover_image_url,
+                progress: progressEntry ? progressEntry.progress : 0,
+                last_read_at: progressEntry ? progressEntry.timestamp : 0
+            });
+        });
+
+        // Overlay API data (truth)
+        apiReadings.forEach(item => {
+            // If exists, update. If not, add.
+            // API usually has fresher last_read_at if synced
+            readingMap.set(item.book_id, item);
+        });
+
+        // Sort by recency seems good
+        const mergedList = Array.from(readingMap.values());
+        // mergedList.sort((a, b) => new Date(b.last_read_at) - new Date(a.last_read_at));
+
+        setReadings(mergedList);
     };
 
     const getImageUrl = (url) => {
@@ -95,6 +130,10 @@ export default function Dashboard() {
                                 </View>
                             </TouchableOpacity>
                         ))}
+                        {/* Always visible 'More' card at the end of the list */}
+                        <TouchableOpacity onPress={() => router.push('/library')} style={[styles.frame, { justifyContent: 'center', alignItems: 'center', backgroundColor: 'transparent', borderWidth: 1, borderColor: '#ddd', borderStyle: 'dashed' }]}>
+                            <Text style={{ fontFamily: 'serif', fontSize: 16, color: '#666' }}>+ Browse Library</Text>
+                        </TouchableOpacity>
                     </ScrollView>
                 ) : (
 
@@ -104,9 +143,9 @@ export default function Dashboard() {
                         <TouchableOpacity
                             onPress={() => {
                                 if (Platform.OS === 'web') {
-                                    window.location.href = '/';
+                                    window.location.href = '/library';
                                 } else {
-                                    router.replace('/');
+                                    router.replace('/library');
                                 }
                             }}
                             style={{ padding: 10, backgroundColor: '#f5f5f5', borderRadius: 8 }}

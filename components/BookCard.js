@@ -1,7 +1,9 @@
 import { View, Text, Image, Pressable } from 'react-native';
 import { Link } from 'expo-router';
+import { useTheme } from '../lib/theme';
 
 export default function BookCard({ id, title, author, coverColor, coverImage }) {
+    const { theme } = useTheme();
     return (
         <Link href={`/read/${id}`} asChild>
             <Pressable style={({ pressed }) => ({
@@ -45,8 +47,8 @@ export default function BookCard({ id, title, author, coverColor, coverImage }) 
                     }} pointerEvents="none" />
                 </View>
 
-                <Text numberOfLines={2} style={{ fontFamily: 'serif', fontSize: 16, fontWeight: '600', color: '#333' }}>{title}</Text>
-                <Text numberOfLines={1} style={{ fontFamily: 'serif', fontSize: 12, color: '#666' }}>{author}</Text>
+                <Text numberOfLines={2} style={{ fontFamily: 'serif', fontSize: 16, fontWeight: '600', color: theme.text }}>{title}</Text>
+                <Text numberOfLines={1} style={{ fontFamily: 'serif', fontSize: 12, color: theme.textSecondary }}>{author}</Text>
             </Pressable>
         </Link>
     );

@@ -3,17 +3,20 @@ import { View, Text, ScrollView, Pressable, StyleSheet } from 'react-native';
 import { ChevronRight, ChevronLeft } from 'lucide-react-native';
 import AnimatedEntry from './AnimatedEntry';
 import BookCard from './BookCard';
+import { useTheme } from '../lib/theme';
 
 const VIEW_ITEM_WIDTH = 160;
 const VIEW_ITEM_MARGIN = 40;
 const TOTAL_ITEM_WIDTH = VIEW_ITEM_WIDTH + VIEW_ITEM_MARGIN;
-const SCROLL_STEP = 5 * TOTAL_ITEM_WIDTH; // 1000px
+const SCROLL_STEP = 2 * TOTAL_ITEM_WIDTH; // 2 items at a time
 
-export default function GenreSection({ title, books, getImageUrl, delay }) {
+export default function GenreSection({ title, books, getImageUrl, delay, hideTitle }) {
+    const { theme } = useTheme();
     const scrollRef = useRef(null);
     const [scrollX, setScrollX] = useState(0);
     const [contentWidth, setContentWidth] = useState(0);
     const [layoutWidth, setLayoutWidth] = useState(0);
+    const styles = getStyles(theme);
 
     const scroll = (direction) => {
         if (!scrollRef.current) return;
@@ -35,9 +38,11 @@ export default function GenreSection({ title, books, getImageUrl, delay }) {
 
     return (
         <AnimatedEntry delay={delay} style={{ marginBottom: 50, position: 'relative' }}>
-            <Text style={styles.header}>
-                {title}
-            </Text>
+            {!hideTitle && (
+                <Text style={styles.header}>
+                    {title}
+                </Text>
+            )}
 
             <View>
                 <ScrollView
@@ -67,13 +72,13 @@ export default function GenreSection({ title, books, getImageUrl, delay }) {
                 {/* Floating Navigation Buttons */}
                 {canScrollLeft && (
                     <Pressable onPress={() => scroll('left')} style={[styles.navButton, { left: 0 }]}>
-                        <ChevronLeft color="#333" size={24} />
+                        <ChevronLeft color={theme.text} size={24} />
                     </Pressable>
                 )}
 
                 {canScrollRight && (
                     <Pressable onPress={() => scroll('right')} style={[styles.navButton, { right: 0 }]}>
-                        <ChevronRight color="#333" size={24} />
+                        <ChevronRight color={theme.text} size={24} />
                     </Pressable>
                 )}
             </View>
@@ -81,7 +86,9 @@ export default function GenreSection({ title, books, getImageUrl, delay }) {
     );
 }
 
-const styles = StyleSheet.create({
+
+
+const getStyles = (theme) => StyleSheet.create({
     header: {
         fontSize: 18,
         fontFamily: 'serif',
@@ -89,9 +96,9 @@ const styles = StyleSheet.create({
         marginBottom: 20,
         letterSpacing: 1,
         textTransform: 'uppercase',
-        color: '#333',
+        color: theme.text,
         borderBottomWidth: 1,
-        borderBottomColor: '#ccc',
+        borderBottomColor: theme.border,
         paddingBottom: 5,
         alignSelf: 'flex-start',
         paddingRight: 20
@@ -102,10 +109,10 @@ const styles = StyleSheet.create({
         width: 40,
         height: 40,
         borderRadius: 20,
-        backgroundColor: 'rgba(255, 255, 255, 0.9)',
+        backgroundColor: theme.surface,
         justifyContent: 'center',
         alignItems: 'center',
-        shadowColor: "#000",
+        shadowColor: theme.shadow,
         shadowOffset: { width: 0, height: 2 },
         shadowOpacity: 0.25,
         shadowRadius: 3.84,

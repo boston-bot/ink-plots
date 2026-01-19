@@ -1,12 +1,17 @@
-import { View, Text, TextInput, Pressable, StyleSheet, ActivityIndicator } from 'react-native';
-import { Stack, useRouter } from 'expo-router';
-import { useState } from 'react';
-import AnimatedEntry from '../../components/AnimatedEntry';
-import { API_URL } from '../lib/api'; // Corrected path
-import AsyncStorage from '@react-native-async-storage/async-storage';
 
-export default function Login() {
+import { View, Text, TextInput, Pressable, StyleSheet, ActivityIndicator } from 'react-native';
+import { Stack, useRouter, useLocalSearchParams } from 'expo-router';
+import React, { useState } from 'react'; // Added React import, kept useState
+import AnimatedEntry from '../../components/AnimatedEntry';
+import { API_URL } from '../../lib/api'; // Corrected path
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { useTheme } from '../../lib/theme';
+
+export default function LoginScreen() { // Renamed component from Login to LoginScreen
+    const { theme } = useTheme();
     const router = useRouter();
+    const { redirect } = useLocalSearchParams();
+    const styles = getStyles(theme);
     const [email, setEmail] = useState('');
     const [password, setPassword] = useState('');
     const [loading, setLoading] = useState(false);
@@ -37,7 +42,10 @@ export default function Login() {
             if (data.user) {
                 await AsyncStorage.setItem('userData', JSON.stringify(data.user));
             }
-            router.replace('/dashboard');
+
+            // Redirect to specified page or dashboard
+            const redirectPath = redirect || '/dashboard';
+            router.replace(redirectPath);
         } catch (err) {
             setError(err.message);
         } finally {
@@ -50,7 +58,7 @@ export default function Login() {
             <Stack.Screen options={{ headerShown: false }} />
 
             <AnimatedEntry>
-                <Text style={styles.logo}>Ink Plots</Text>
+                <Text style={styles.logo}>The Ink Plots</Text>
                 <Text style={styles.subtitle}>Sign in to your account</Text>
 
                 {error ? <Text style={styles.error}>{error}</Text> : null}
@@ -95,10 +103,10 @@ export default function Login() {
     );
 }
 
-const styles = StyleSheet.create({
+const getStyles = (theme) => StyleSheet.create({
     container: {
         flex: 1,
-        backgroundColor: '#F9F7F1', // White paper background (Warmer)
+        backgroundColor: theme.background, // White paper background (Warmer)
         justifyContent: 'center',
         padding: 30,
     },
@@ -107,11 +115,12 @@ const styles = StyleSheet.create({
         fontSize: 32,
         textAlign: 'center',
         marginBottom: 10,
+        color: theme.text,
     },
     subtitle: {
         fontFamily: 'serif',
         fontSize: 16,
-        color: '#666',
+        color: theme.textSecondary,
         textAlign: 'center',
         marginBottom: 50,
     },
@@ -124,19 +133,20 @@ const styles = StyleSheet.create({
         fontFamily: 'serif',
         fontSize: 14,
         marginBottom: 8,
-        color: '#333',
+        color: theme.text,
     },
     input: {
         borderBottomWidth: 1,
-        borderBottomColor: '#ccc',
+        borderBottomColor: theme.border,
         paddingVertical: 10,
         paddingHorizontal: 5,
         marginBottom: 30,
         fontFamily: 'serif',
         fontSize: 16,
+        color: theme.text,
     },
     btn: {
-        backgroundColor: '#000',
+        backgroundColor: theme.primary,
         padding: 15,
         alignItems: 'center',
         marginTop: 10,
@@ -161,10 +171,11 @@ const styles = StyleSheet.create({
     },
     footerText: {
         fontFamily: 'serif',
-        color: '#666'
+        color: theme.textSecondary
     },
     link: {
         fontFamily: 'serif',
-        fontWeight: 'bold'
+        fontWeight: 'bold',
+        color: theme.text
     }
 });
