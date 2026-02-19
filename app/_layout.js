@@ -31,6 +31,8 @@ export default function Layout() {
                         contentStyle: { backgroundColor },
                         headerBackTitleVisible: false,
                         animation: 'fade',
+                        animationDuration: 200,
+                        headerShown: false,
                     }} />
                 </ThemeProvider>
             </NavigationThemeProvider>

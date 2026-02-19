@@ -1,13 +1,16 @@
 import { View, Text, ScrollView, Image as RNImage, TouchableOpacity, ActivityIndicator, Alert, StatusBar } from 'react-native';
-import { useLocalSearchParams, Stack, useRouter } from 'expo-router';
+import { useLocalSearchParams, useGlobalSearchParams, Stack, useRouter } from 'expo-router';
 import { useEffect, useState, useRef } from 'react';
 import { ChevronLeft } from 'lucide-react-native';
+import CustomHeader from '../../components/CustomHeader';
 import HeaderProfile from '../../components/HeaderProfile';
-import { getBook, subscribe, API_URL, startReading, updateProgress, getReadingStatus, returnBook } from '../../lib/api';
+import { getBook, getStory, subscribe, API_URL, startReading, updateProgress, getReadingStatus, returnBook } from '../../lib/api';
 import { saveBookToOffline, getOfflineBook, removeBookFromOffline, isBookOffline, saveOfflineProgress, getOfflineProgress, removeOfflineProgress } from '../../lib/offline';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { LinearGradient } from 'expo-linear-gradient';
 import ReaderSettings from '../../components/ReaderSettings';
+import CommentSection from '../../components/CommentSection';
+import LikeButton from '../../components/LikeButton';
 
 const THEMES = {
     light: { bg: '#ffffff', text: '#222222', meta: '#666666' },
@@ -16,7 +19,11 @@ const THEMES = {
 };
 
 export default function Reader() {
-    const { id } = useLocalSearchParams();
+    const params = useGlobalSearchParams();
+    // Accept either 'type' (old) or 'storyType' (new fix)
+    const { id, type, storyType } = params;
+    const effectiveType = storyType || type;
+    console.log('Reader Params Full:', JSON.stringify(params));
     const router = useRouter();
 
     // Book & State
@@ -66,62 +73,82 @@ export default function Reader() {
         const token = await AsyncStorage.getItem('userToken');
 
         try {
-            const [bookData, statusData, offlineParams, localProgress] = await Promise.all([
-                getBook(id, token),
-                getReadingStatus(id, token),
-                isBookOffline(id),
-                getOfflineProgress(id)
-            ]);
+            if (effectiveType === 'story') {
+                // Load User Submission
+                const storyData = await getStory(id);
+                if (storyData) {
+                    // Normalize data to match Book structure
+                    setBook({
+                        ...storyData,
+                        author: storyData.author_name || 'Unknown Author', // Map email to author
+                        chapters: storyData.chapters || []
+                    });
+                    if (storyData.chapters && storyData.chapters.length > 0) {
+                        setChapters(storyData.chapters);
+                    } else if (storyData.content_text) {
+                        setChapters([{ id: null, title: 'Full Story', content: storyData.content_text, sequence_number: 1 }]);
+                    }
 
-            // 1. Handle Structure (Book + Chapters)
-            if (bookData) {
-                setBook(bookData);
-                if (bookData.chapters && bookData.chapters.length > 0) {
-                    setChapters(bookData.chapters);
-                } else if (bookData.content) {
-                    // Backwards compatibility / Single chapter
-                    setChapters([{ id: 'mock', title: 'Chapter 1', content: bookData.content, sequence_number: 1 }]);
+                    // Helper: Mark as started for WIP (no checkout logic for WIP yet)
+                    setIsStarted(true);
                 }
             } else {
-                // Offline Fallback
-                const offlineBook = await getOfflineBook(id);
-                if (offlineBook) {
-                    setBook(offlineBook);
-                    setChapters(offlineBook.chapters || [{ title: 'Chapter 1', content: offlineBook.content }]);
+                // Load Library Book (Legacy)
+                const [bookData, statusData, offlineParams, localProgress] = await Promise.all([
+                    getBook(id, token),
+                    getReadingStatus(id, token),
+                    isBookOffline(id),
+                    getOfflineProgress(id)
+                ]);
+
+                // 1. Handle Structure (Book + Chapters)
+                if (bookData) {
+                    setBook(bookData);
+                    if (bookData.chapters && bookData.chapters.length > 0) {
+                        setChapters(bookData.chapters);
+                    } else if (bookData.content) {
+                        // Backwards compatibility / Single chapter
+                        setChapters([{ id: 'mock', title: 'Chapter 1', content: bookData.content, sequence_number: 1 }]);
+                    }
+                } else {
+                    // Offline Fallback
+                    const offlineBook = await getOfflineBook(id);
+                    if (offlineBook) {
+                        setBook(offlineBook);
+                        setChapters(offlineBook.chapters || [{ title: 'Chapter 1', content: offlineBook.content }]);
+                    }
                 }
-            }
 
-            // 2. Handle Status (Progress)
-            const mergedStatus = statusData || localProgress;
-            setReadingStatus(mergedStatus);
-            setIsDownloaded(offlineParams);
+                // 2. Handle Status (Progress)
+                const mergedStatus = statusData || localProgress;
+                setReadingStatus(mergedStatus);
+                setIsDownloaded(offlineParams);
 
-            if (mergedStatus) {
-                setIsStarted(true);
-            }
-
-            // 3. Restore Chapter Position
-            if (mergedStatus && mergedStatus.current_chapter_index !== undefined) {
-                setActiveChapterIndex(mergedStatus.current_chapter_index);
-            } else {
-                setActiveChapterIndex(0);
+                if (mergedStatus) {
+                    setIsStarted(true);
+                    if (mergedStatus.current_chapter_index !== undefined) {
+                        setActiveChapterIndex(mergedStatus.current_chapter_index);
+                    }
+                }
             }
 
         } catch (e) {
             console.error("Load Book Error", e);
-            // Final Fallback
-            const offlineBook = await getOfflineBook(id);
-            const localProgress = await getOfflineProgress(id);
+            // Final Fallback (only for books currently)
+            if (effectiveType !== 'story') {
+                const offlineBook = await getOfflineBook(id);
+                const localProgress = await getOfflineProgress(id);
 
-            if (offlineBook) {
-                setBook(offlineBook);
-                setChapters(offlineBook.chapters || [{ title: 'Chapter 1', content: offlineBook.content }]);
-                setReadingStatus(localProgress);
-                setIsDownloaded(true);
-                setIsStarted(true);
+                if (offlineBook) {
+                    setBook(offlineBook);
+                    setChapters(offlineBook.chapters || [{ title: 'Chapter 1', content: offlineBook.content }]);
+                    setReadingStatus(localProgress);
+                    setIsDownloaded(true);
+                    setIsStarted(true);
 
-                if (localProgress && localProgress.current_chapter_index) {
-                    setActiveChapterIndex(localProgress.current_chapter_index);
+                    if (localProgress && localProgress.current_chapter_index) {
+                        setActiveChapterIndex(localProgress.current_chapter_index);
+                    }
                 }
             }
         } finally {
@@ -143,24 +170,28 @@ export default function Reader() {
             const token = await AsyncStorage.getItem('userToken');
             if (!token) return router.push('/auth/login');
 
-            // 1. Register on Server
-            try {
-                await startReading(id, token);
-            } catch (err) {
-                console.warn("Server sync failed, proceeding locally if possible", err);
-            }
+            // 1. Register on Server (Books only)
+            if (effectiveType !== 'story') {
+                try {
+                    await startReading(id, token);
+                } catch (err) {
+                    console.warn("Server sync failed, proceeding locally if possible", err);
+                }
 
-            // 2. Save Offline
-            if (book) {
-                const saved = await saveBookToOffline(book);
-                if (saved) setIsDownloaded(true);
+                // 2. Save Offline
+                if (book) {
+                    const saved = await saveBookToOffline(book);
+                    if (saved) setIsDownloaded(true);
+                }
             }
 
             setIsStarted(true);
             setReadingStatus({ current_position: 0 });
             setActiveChapterIndex(0);
 
-            Alert.alert("Success", "Book checked out and downloaded for offline reading.");
+            if (effectiveType !== 'story') {
+                Alert.alert("Success", "Book checked out and downloaded for offline reading.");
+            }
 
         } catch (e) {
             console.error("Start Reading Fatal Error", e);
@@ -231,13 +262,16 @@ export default function Reader() {
             progress: globalProgress
         };
 
-        // 1. Save Local
-        await saveOfflineProgress(id, progressData);
+        // Sync Server (Only for books for now)
+        if (effectiveType !== 'story') {
+            // 1. Save Local
+            await saveOfflineProgress(id, progressData);
 
-        // 2. Sync Server
-        const token = await AsyncStorage.getItem('userToken');
-        if (token) {
-            updateProgress(id, Math.floor(scrollY), Math.floor(totalHeight), globalProgress, token, chapterIndex);
+            // 2. Sync Server
+            const token = await AsyncStorage.getItem('userToken');
+            if (token) {
+                updateProgress(id, Math.floor(scrollY), Math.floor(totalHeight), globalProgress, token, chapterIndex);
+            }
         }
     };
 
@@ -252,7 +286,6 @@ export default function Reader() {
     };
 
     const handleSubscribe = async () => {
-        // ... (Same subscribe logic) ...
         setUpgrading(true);
         try {
             const token = await AsyncStorage.getItem('userToken');
@@ -283,35 +316,21 @@ export default function Reader() {
                 backgroundColor={theme.bg}
             />
 
-            <Stack.Screen options={{
-                title: activeChapter.title || book.title,
-                headerStyle: { backgroundColor: theme.bg },
-                headerTintColor: theme.text,
-                headerLeft: () => (
-                    <TouchableOpacity
-                        onPress={() => {
-                            if (router.canGoBack()) {
-                                router.back();
-                            } else {
-                                router.replace('/dashboard');
-                            }
-                        }}
-                        style={{ flexDirection: 'row', alignItems: 'center', marginLeft: -8, padding: 8 }}
-                    >
-                        <ChevronLeft color={theme.text} size={28} />
-                    </TouchableOpacity>
-                ),
-                headerRight: () => (
+            <Stack.Screen options={{ headerShown: false }} />
+
+            <CustomHeader
+                title={activeChapter.title || book.title}
+                backgroundColor={theme.bg}
+                textColor={theme.text}
+                rightComponent={
                     <View style={{ flexDirection: 'row', alignItems: 'center' }}>
                         <TouchableOpacity onPress={() => setShowSettings(true)} style={{ marginRight: 15, padding: 4 }}>
                             <Text style={{ fontSize: 20, fontWeight: 'bold', color: theme.text }}>Aa</Text>
                         </TouchableOpacity>
                         <HeaderProfile />
                     </View>
-                ),
-                headerBackVisible: false,
-                headerShadowVisible: false, // Cleaner look
-            }} />
+                }
+            />
 
             <ReaderSettings
                 visible={showSettings}
@@ -387,7 +406,10 @@ export default function Reader() {
                             </Text>
                         )}
 
+
+
                         {/* Navigation Buttons */}
+
                         <View style={{ flexDirection: 'row', justifyContent: 'space-between', borderTopWidth: 1, borderColor: settings.theme === 'dark' ? '#333' : '#eee', paddingTop: 30, marginTop: 20 }}>
                             <TouchableOpacity
                                 onPress={handlePrevChapter}
@@ -406,10 +428,25 @@ export default function Reader() {
                             </TouchableOpacity>
                         </View>
 
-                    </View>
-                )}
+                        {/* Like Button - For published stories */}
+                        {/* Like Button - For published stories AND books */}
+                        {(effectiveType !== 'story' || (effectiveType === 'story' && book?.status === 'published')) && (
+                            <View style={{ alignItems: 'center', marginTop: 20, paddingTop: 20, borderTopWidth: 1, borderTopColor: settings.theme === 'dark' ? '#333' : '#eee' }}>
+                                <Text style={{ color: theme.text, marginBottom: 10, fontFamily: 'serif' }}>Enjoyed this story?</Text>
+                                <LikeButton storyId={id} size="medium" type={effectiveType === 'story' ? 'story' : 'book'} />
+                            </View>
+                        )}
 
-            </ScrollView>
-        </View>
+                        {/* Feedback Section - Only for WIP Stories */}
+                        {effectiveType === 'story' && book?.status === 'wip' && (
+                            <CommentSection storyId={id} chapterId={activeChapter ? activeChapter.id : null} />
+                        )}
+
+                    </View>
+                )
+                }
+
+            </ScrollView >
+        </View >
     );
 }

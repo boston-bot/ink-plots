@@ -31,6 +31,16 @@ export default function WriterDashboard() {
             }
 
             const data = await getWriterStories(token);
+            console.log('=== WRITER DASHBOARD LOADED STORIES ===');
+            console.log('Total stories:', data.length);
+            data.forEach((story, idx) => {
+                console.log(`Story ${idx}:`, {
+                    id: story.id,
+                    title: story.title,
+                    status: story.status,
+                    status_type: typeof story.status
+                });
+            });
             setStories(data);
             setLoading(false);
         } catch (error) {
@@ -144,10 +154,8 @@ export default function WriterDashboard() {
             <ScrollView contentContainerStyle={styles.content}>
                 {/* Header */}
                 <View style={styles.header}>
-                    <View>
-                        <Text style={styles.title}>Writer Dashboard</Text>
-                        <Text style={styles.subtitle}>Manage your stories and drafts</Text>
-                    </View>
+                    <Text style={styles.title}>Writer Dashboard</Text>
+                    <Text style={styles.subtitle}>Manage your stories and drafts</Text>
                     <TouchableOpacity style={styles.newBtn} onPress={handleNewStory}>
                         <Plus size={20} color="#fff" />
                         <Text style={styles.newBtnText}>New Story</Text>
@@ -215,7 +223,8 @@ export default function WriterDashboard() {
                     </View>
                 )}
             </ScrollView>
-        </View>
+
+        </View >
     );
 }
 
@@ -236,10 +245,8 @@ function getStyles(theme) {
             paddingBottom: 60,
         },
         header: {
-            flexDirection: 'row',
-            justifyContent: 'space-between',
-            alignItems: 'center',
             marginBottom: 24,
+            alignItems: 'flex-start',
         },
         title: {
             fontSize: 28,
@@ -253,6 +260,7 @@ function getStyles(theme) {
             marginTop: 4,
         },
         newBtn: {
+            marginTop: 16,
             flexDirection: 'row',
             alignItems: 'center',
             gap: 8,

@@ -3,7 +3,7 @@ import AnimatedEntry from '../../components/AnimatedEntry';
 import { useRouter, Link } from 'expo-router';
 import { useEffect, useState, useCallback } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { subscribe, getReadings, API_URL } from '../../lib/api';
+import { subscribe, getReadings, getReadingStats, API_URL } from '../../lib/api';
 import { getOfflineLibrary, getAllOfflineProgress } from '../../lib/offline';
 import { useFocusEffect } from '@react-navigation/native';
 
@@ -12,6 +12,7 @@ export default function Dashboard() {
     const [user, setUser] = useState(null);
     const [upgrading, setUpgrading] = useState(false);
     const [readings, setReadings] = useState([]);
+    const [readingStats, setReadingStats] = useState(null);
 
     useFocusEffect(
         useCallback(() => {
@@ -29,6 +30,14 @@ export default function Dashboard() {
         let apiReadings = [];
         if (token) {
             apiReadings = await getReadings(token);
+
+            // Fetch weekly reading stats
+            try {
+                const stats = await getReadingStats(token);
+                setReadingStats(stats);
+            } catch (e) {
+                console.error('Failed to load reading stats:', e);
+            }
         }
 
         // 2. Fetch Offline Data
@@ -158,25 +167,62 @@ export default function Dashboard() {
 
             <AnimatedEntry delay={200} style={styles.goalSection}>
                 <Text style={styles.sectionTitle}>Weekly Reading Goal</Text>
-                <View style={styles.goalCard}>
-                    <View style={styles.goalHeader}>
-                        <View style={styles.goalStat}>
-                            <Text style={styles.goalNumber}>3</Text>
-                            <Text style={styles.goalLabel}>Books Completed</Text>
+                {readingStats ? (
+                    <View style={styles.goalCard}>
+                        <View style={styles.goalHeader}>
+                            <View style={styles.goalStat}>
+                                <Text style={styles.goalNumber}>{readingStats.goal.progress}</Text>
+                                <Text style={styles.goalLabel}>
+                                    {readingStats.goal.type === 'books' ? 'Books Completed' : 'Minutes Read'}
+                                </Text>
+                                <Text style={styles.goalTarget}>
+                                    Goal: {readingStats.goal.value} {readingStats.goal.type === 'books' ? 'books' : 'min'}
+                                </Text>
+                            </View>
+                            <View style={styles.graphContainer}>
+                                {/* Real Daily Activity Bars */}
+                                {readingStats.daily_activity.map((day, i) => {
+                                    const maxMinutes = Math.max(...readingStats.daily_activity.map(d => d.minutes), 1);
+                                    const height = Math.max(10, (day.minutes / maxMinutes) * 90);
+                                    return (
+                                        <View key={i} style={styles.graphBarWrapper}>
+                                            <View style={[styles.graphBar, { height }]} />
+                                            <Text style={styles.graphLabel}>{day.day}</Text>
+                                        </View>
+                                    );
+                                })}
+                            </View>
                         </View>
-                        <View style={styles.graphContainer}>
-                            {/* Mock Graph Bars */}
-                            {[40, 70, 30, 85, 50, 20, 90].map((h, i) => (
-                                <View key={i} style={[styles.graphBar, { height: h }]} />
-                            ))}
-                        </View>
+                        {readingStats.completed_books.length > 0 ? (
+                            <ScrollView horizontal style={styles.goalCovers} showsHorizontalScrollIndicator={false}>
+                                {readingStats.completed_books.map((book, idx) => (
+                                    <TouchableOpacity
+                                        key={idx}
+                                        onPress={() => router.push(`/read/${book.book_id}`)}
+                                    >
+                                        {book.cover_image_url ? (
+                                            <Image
+                                                source={{ uri: getImageUrl(book.cover_image_url) }}
+                                                style={styles.miniCover}
+                                            />
+                                        ) : (
+                                            <View style={[styles.miniCover, { backgroundColor: book.cover_color || '#ccc' }]} />
+                                        )}
+                                    </TouchableOpacity>
+                                ))}
+                            </ScrollView>
+                        ) : (
+                            <View style={styles.emptyState}>
+                                <Text style={styles.emptyStateText}>No books completed this week yet</Text>
+                                <Text style={styles.emptyStateSubtext}>Keep reading to reach your goal!</Text>
+                            </View>
+                        )}
                     </View>
-                    <ScrollView horizontal style={styles.goalCovers}>
-                        <View style={styles.miniCover} />
-                        <View style={styles.miniCover} />
-                        <View style={[styles.miniCover, styles.miniCoverEmpty]} />
-                    </ScrollView>
-                </View>
+                ) : (
+                    <View style={styles.goalCard}>
+                        <ActivityIndicator size="small" color="#666" />
+                    </View>
+                )}
             </AnimatedEntry>
         </View>
     );
@@ -198,6 +244,79 @@ const styles = StyleSheet.create({
         shadowOffset: { width: 0, height: 2 },
         shadowOpacity: 0.05,
         shadowRadius: 5,
+        elevation: 2,
+    },
+    subInfo: {
+        flex: 1,
+    },
+    tierBadge: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 8,
+        marginBottom: 8,
+    },
+    tierText: {
+        fontFamily: 'serif',
+        fontSize: 18,
+        fontWeight: '600',
+        color: '#333',
+    },
+    tierDesc: {
+        fontFamily: 'serif',
+        fontSize: 13,
+        color: '#666',
+    },
+    upgradeBtn: {
+        backgroundColor: '#FF6B35',
+        paddingHorizontal: 20,
+        paddingVertical: 12,
+        borderRadius: 8,
+    },
+    upgradeBtnDisabled: {
+        opacity: 0.6,
+    },
+    upgradeBtnText: {
+        color: '#fff',
+        fontFamily: 'serif',
+        fontSize: 14,
+        fontWeight: '600',
+    },
+    sectionTitle: {
+        fontFamily: 'serif',
+        fontSize: 20,
+        fontWeight: 'bold',
+        marginBottom: 20,
+        color: '#222',
+    },
+    currentlyReading: {
+        marginBottom: 30,
+    },
+    bookGrid: {
+        flexDirection: 'row',
+        flexWrap: 'wrap',
+        gap: 15,
+    },
+    bookCard: {
+        width: 110,
+        marginBottom: 15,
+    },
+    cover: {
+        width: 110,
+        height: 160,
+        borderRadius: 8,
+        marginBottom: 8,
+    },
+    bookTitle: {
+        fontFamily: 'serif',
+        fontSize: 13,
+        fontWeight: '600',
+        color: '#222',
+        marginBottom: 2,
+    },
+    bookAuthor: {
+        fontFamily: 'serif',
+        fontSize: 11,
+        color: '#666',
     },
     subLabel: {
         fontSize: 12,
@@ -211,26 +330,14 @@ const styles = StyleSheet.create({
         fontWeight: 'bold',
         fontFamily: 'serif',
     },
-    upgradeBtn: {
-        backgroundColor: '#000',
-        paddingVertical: 10,
-        paddingHorizontal: 15,
-        borderRadius: 20,
-    },
     upgradeText: {
         color: '#fff',
         fontWeight: 'bold',
         fontSize: 12,
     },
-    sectionTitle: {
-        fontFamily: 'serif',
-        fontSize: 24,
-        fontWeight: 'bold',
-        marginBottom: 20,
-    },
     framesContainer: {
         flexDirection: 'row',
-        marginBottom: 60,
+        marginBottom: 30,
     },
     frame: {
         width: 280,
@@ -292,66 +399,96 @@ const styles = StyleSheet.create({
         marginTop: 5,
     },
     goalSection: {
-        marginBottom: 40,
+        marginBottom: 30,
     },
     goalCard: {
         backgroundColor: '#fff',
         borderRadius: 12,
-        padding: 25,
+        padding: 20,
         shadowColor: '#000',
         shadowOffset: { width: 0, height: 2 },
         shadowOpacity: 0.05,
         shadowRadius: 5,
+        elevation: 2,
     },
     goalHeader: {
         flexDirection: 'row',
         justifyContent: 'space-between',
         alignItems: 'flex-end',
-        marginBottom: 30,
-        borderBottomWidth: 1,
-        borderColor: '#f0f0f0',
-        paddingBottom: 20,
+        marginBottom: 20,
     },
     goalStat: {
-        alignItems: 'flex-start',
+        flex: 1,
     },
     goalNumber: {
         fontFamily: 'serif',
         fontSize: 48,
         fontWeight: 'bold',
+        color: '#FF6B35',
     },
     goalLabel: {
         fontFamily: 'serif',
         fontSize: 14,
         color: '#666',
-        textTransform: 'uppercase',
-        letterSpacing: 1,
+        marginTop: 4,
+    },
+    goalTarget: {
+        fontFamily: 'serif',
+        fontSize: 12,
+        color: '#999',
+        marginTop: 4,
     },
     graphContainer: {
         flexDirection: 'row',
         alignItems: 'flex-end',
         gap: 8,
-        height: 60,
+        height: 100,
+    },
+    graphBarWrapper: {
+        alignItems: 'center',
+        justifyContent: 'flex-end',
+        flex: 1,
     },
     graphBar: {
         width: 8,
-        backgroundColor: '#eee',
+        backgroundColor: '#FF6B35',
         borderRadius: 4,
+        marginBottom: 4,
+    },
+    graphLabel: {
+        fontSize: 9,
+        color: '#999',
+        fontFamily: 'serif',
     },
     goalCovers: {
         flexDirection: 'row',
+        gap: 10,
     },
     miniCover: {
         width: 60,
         height: 90,
-        backgroundColor: '#eee',
-        borderRadius: 4,
-        marginRight: 15,
+        borderRadius: 6,
+        marginRight: 10,
     },
     miniCoverEmpty: {
-        backgroundColor: 'transparent',
-        borderWidth: 1,
+        borderWidth: 2,
         borderColor: '#ddd',
         borderStyle: 'dashed',
+        backgroundColor: 'transparent',
+    },
+    emptyState: {
+        alignItems: 'center',
+        paddingVertical: 20,
+    },
+    emptyStateText: {
+        fontFamily: 'serif',
+        fontSize: 14,
+        color: '#666',
+        marginBottom: 4,
+    },
+    emptyStateSubtext: {
+        fontFamily: 'serif',
+        fontSize: 12,
+        color: '#999',
     },
 });

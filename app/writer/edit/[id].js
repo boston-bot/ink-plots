@@ -1,10 +1,11 @@
-import { View, Text, ScrollView, TextInput, TouchableOpacity, StyleSheet, ActivityIndicator, Alert, useWindowDimensions, Platform } from 'react-native';
+import { View, Text, ScrollView, TextInput, TouchableOpacity, Pressable, StyleSheet, ActivityIndicator, Alert, useWindowDimensions, Platform } from 'react-native';
 import { Stack, useRouter, useLocalSearchParams } from 'expo-router';
 import { useState, useEffect, useRef } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Save, Send, Upload, FileText } from 'lucide-react-native';
 import CustomHeader from '../../../components/CustomHeader';
-import { getStory, updateStory, publishStory, uploadFile, parseFile } from '../../../lib/api';
+import { getWriterStory, updateStory, publishStory, uploadFile, parseFile, API_URL } from '../../../lib/api';
+import { saveDraft, getDraft, removeDraft } from '../../../lib/offline';
 import * as DocumentPicker from 'expo-document-picker';
 import { useTheme } from '../../../lib/theme';
 
@@ -40,20 +41,86 @@ export default function StoryEditor() {
                 return;
             }
 
-            const data = await getStory(id, token);
-            setStory(data);
+            // 1. Fetch Server Data
+            let serverStory = null;
+            try {
+                serverStory = await getWriterStory(id, token);
+            } catch (err) {
+                console.warn('Server load failed, trying offline draft...');
+            }
+
+            // 2. Fetch Local Draft
+            const localDraft = await getDraft(id);
+
+            // 3. Conflict Resolution / Fallback
+            if (localDraft) {
+                const localTime = localDraft.local_updated_at || 0;
+                const serverTime = serverStory ? new Date(serverStory.updated_at).getTime() : 0;
+
+                if (!serverStory || localTime > serverTime) {
+                    // Local is newer or server failed
+                    if (Platform.OS === 'web') {
+                        if (confirm(`Found a local draft from ${new Date(localTime).toLocaleTimeString()}. Restore it?`)) {
+                            setStory(localDraft);
+                            setLoading(false);
+                            return;
+                        } else if (serverStory) {
+                            await removeDraft(id);
+                        }
+                    } else {
+                        Alert.alert(
+                            'Unsaved Changes',
+                            `Found a local draft from ${new Date(localTime).toLocaleTimeString()}. Restore?`,
+                            [
+                                {
+                                    text: 'Discard',
+                                    style: 'destructive',
+                                    onPress: async () => {
+                                        if (serverStory) {
+                                            setStory(serverStory);
+                                            await removeDraft(id);
+                                        }
+                                    }
+                                },
+                                {
+                                    text: 'Restore',
+                                    onPress: () => setStory(localDraft)
+                                }
+                            ]
+                        );
+                        // If server story exists, show it pending decision
+                        if (serverStory) setStory(serverStory);
+                        setLoading(false);
+                        return;
+                    }
+                } else {
+                    // Server is newer
+                    await removeDraft(id);
+                }
+            }
+
+            if (serverStory) {
+                setStory(serverStory);
+            } else {
+                throw new Error('Could not load story');
+            }
             setLoading(false);
         } catch (error) {
             console.error('Failed to load story:', error);
-            Alert.alert('Error', 'Failed to load story');
+            Alert.alert('Error', 'Failed to load story. Please check your connection.');
             router.back();
         }
     };
 
     const handleChange = (field, value) => {
-        setStory(prev => ({ ...prev, [field]: value }));
+        setStory(prev => {
+            const updated = { ...prev, [field]: value };
+            // Immediate local save
+            saveDraft(id, updated).catch(e => console.warn(e));
+            return updated;
+        });
 
-        // Auto-save after 2 seconds of inactivity
+        // Auto-save to server after 2 seconds
         if (saveTimeout.current) clearTimeout(saveTimeout.current);
         saveTimeout.current = setTimeout(() => {
             saveStory({ [field]: value });
@@ -75,6 +142,7 @@ export default function StoryEditor() {
 
             console.log('Saving story data:', dataToSave);
             await updateStory(id, dataToSave, token);
+
             setLastSaved(new Date());
             setSaving(false);
         } catch (error) {
@@ -83,33 +151,71 @@ export default function StoryEditor() {
         }
     };
 
-    const handlePublish = async () => {
+    const handlePublish = async (newStatus = 'published') => {
+        console.log('=== HANDLE PUBLISH CALLED ===');
+        console.log('New status:', newStatus);
+        console.log('Platform:', Platform.OS);
+
         if (!story.title || !story.content_text) {
-            Alert.alert('Incomplete Story', 'Please add a title and content before publishing.');
+            if (Platform.OS === 'web') {
+                alert('Please add a title and content before publishing.');
+            } else {
+                Alert.alert('Incomplete Story', 'Please add a title and content before publishing.');
+            }
             return;
         }
 
-        Alert.alert(
-            'Publish Story',
-            'Are you sure you want to publish this story? It will appear in the Stories feed.',
-            [
-                { text: 'Cancel', style: 'cancel' },
-                {
-                    text: 'Publish',
-                    onPress: async () => {
-                        try {
-                            const token = await AsyncStorage.getItem('userToken');
-                            await publishStory(id, token);
-                            Alert.alert('Success!', 'Your story has been published.', [
-                                { text: 'OK', onPress: () => router.push('/writer') }
-                            ]);
-                        } catch (error) {
-                            Alert.alert('Error', error.message || 'Failed to publish story');
+        const label = newStatus === 'wip' ? 'Work in Progress' : 'Final Story';
+
+        const confirmPublish = Platform.OS === 'web'
+            ? window.confirm(`Are you sure you want to publish as ${label}? This will make your story visible to readers.`)
+            : await new Promise((resolve) => {
+                Alert.alert(
+                    `Publish as ${label}`,
+                    `Are you sure? This will make your story visible to readers as a ${label}.`,
+                    [
+                        { text: 'Cancel', style: 'cancel', onPress: () => resolve(false) },
+                        {
+                            text: 'Publish',
+                            onPress: () => resolve(true)
                         }
-                    }
+                    ]
+                );
+            });
+
+        if (confirmPublish) {
+            try {
+                const token = await AsyncStorage.getItem('userToken');
+
+                const res = await fetch(`${API_URL}/api/writer/stories/${id}/publish`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${token}`
+                    },
+                    body: JSON.stringify({ status: newStatus })
+                });
+
+                if (!res.ok) throw new Error('Failed to update status');
+
+                if (Platform.OS === 'web') {
+                    alert(`Story published as ${label}!`);
+                } else {
+                    Alert.alert('Success!', `Story published as ${label}.`, [
+                        { text: 'OK', onPress: () => loadStory() }
+                    ]);
                 }
-            ]
-        );
+
+                loadStory(); // Reload to update UI
+            } catch (error) {
+                console.error('Publish error:', error);
+                if (Platform.OS === 'web') {
+                    alert(error.message || 'Failed to publish story');
+                } else {
+                    Alert.alert('Error', error.message || 'Failed to publish story');
+                }
+            }
+        }
     };
 
     if (loading || !story) {
@@ -248,11 +354,29 @@ export default function StoryEditor() {
                     <View style={[styles.panel, styles.rightPanel, !isLargeScreen && styles.fullWidth]}>
                         <Text style={styles.panelTitle}>Publishing</Text>
 
+                        {/* Status Display / Toggle */}
                         <View style={styles.statusBox}>
                             <Text style={styles.statusLabel}>Status</Text>
-                            <View style={[styles.statusBadge, { backgroundColor: story.status === 'published' ? '#4CAF50' : '#FFA500' }]}>
-                                <Text style={styles.statusText}>{story.status}</Text>
-                            </View>
+                            {(story.status === 'published' || story.status === 'wip') ? (
+                                <View style={styles.toggleContainer}>
+                                    <TouchableOpacity
+                                        style={[styles.toggleBtn, story.status === 'wip' && styles.toggleBtnActive]}
+                                        onPress={() => story.status !== 'wip' && handlePublish('wip')}
+                                    >
+                                        <Text style={[styles.toggleText, story.status === 'wip' && styles.toggleTextActive]}>WIP</Text>
+                                    </TouchableOpacity>
+                                    <TouchableOpacity
+                                        style={[styles.toggleBtn, story.status === 'published' && styles.toggleBtnActive]}
+                                        onPress={() => story.status !== 'published' && handlePublish('published')}
+                                    >
+                                        <Text style={[styles.toggleText, story.status === 'published' && styles.toggleTextActive]}>Final</Text>
+                                    </TouchableOpacity>
+                                </View>
+                            ) : (
+                                <View style={[styles.statusBadge, { backgroundColor: '#999' }]}>
+                                    <Text style={styles.statusText}>{story.status}</Text>
+                                </View>
+                            )}
                         </View>
 
                         <View style={styles.saveInfo}>
@@ -264,20 +388,76 @@ export default function StoryEditor() {
 
                         <TouchableOpacity style={styles.saveBtn} onPress={() => saveStory()}>
                             <Save size={18} color="#333" />
-                            <Text style={styles.saveBtnText}>Save Now</Text>
+                            <Text style={styles.saveBtnText}>Save Draft</Text>
                         </TouchableOpacity>
 
                         {story.status === 'draft' && (
-                            <TouchableOpacity style={styles.publishBtn} onPress={handlePublish}>
-                                <Send size={18} color="#fff" />
-                                <Text style={styles.publishBtnText}>Publish Story</Text>
-                            </TouchableOpacity>
-                        )}
+                            <View style={{ gap: 10 }}>
+                                {Platform.OS === 'web' ? (
+                                    <>
+                                        <button
+                                            style={{
+                                                display: 'flex',
+                                                flexDirection: 'row',
+                                                alignItems: 'center',
+                                                justifyContent: 'center',
+                                                gap: 8,
+                                                padding: '12px 20px',
+                                                backgroundColor: '#FFA500',
+                                                color: '#fff',
+                                                border: 'none',
+                                                borderRadius: 8,
+                                                fontSize: 16,
+                                                fontWeight: '600',
+                                                cursor: 'pointer',
+                                            }}
+                                            onClick={() => {
+                                                console.log('WIP button clicked');
+                                                handlePublish('wip');
+                                            }}
+                                        >
+                                            <Upload size={18} color="#fff" />
+                                            <span style={{ color: '#fff' }}>Publish as WIP</span>
+                                        </button>
 
-                        {story.status === 'published' && (
-                            <View style={styles.publishedInfo}>
-                                <Text style={styles.publishedText}>✓ Published</Text>
-                                <Text style={styles.publishedDate}>{new Date(story.published_at).toLocaleDateString()}</Text>
+                                        <button
+                                            style={{
+                                                display: 'flex',
+                                                flexDirection: 'row',
+                                                alignItems: 'center',
+                                                justifyContent: 'center',
+                                                gap: 8,
+                                                padding: '12px 20px',
+                                                backgroundColor: '#4CAF50',
+                                                color: '#fff',
+                                                border: 'none',
+                                                borderRadius: 8,
+                                                fontSize: 16,
+                                                fontWeight: '600',
+                                                cursor: 'pointer',
+                                            }}
+                                            onClick={() => {
+                                                console.log('Final button clicked');
+                                                handlePublish('published');
+                                            }}
+                                        >
+                                            <Send size={18} color="#fff" />
+                                            <span style={{ color: '#fff' }}>Publish Final</span>
+                                        </button>
+                                    </>
+                                ) : (
+                                    <>
+                                        <Pressable style={[styles.publishBtn, { backgroundColor: '#FFA500' }]} onPress={() => handlePublish('wip')}>
+                                            <Upload size={18} color="#fff" />
+                                            <Text style={styles.publishBtnText}>Publish as WIP</Text>
+                                        </Pressable>
+
+                                        <Pressable style={styles.publishBtn} onPress={() => handlePublish('published')}>
+                                            <Send size={18} color="#fff" />
+                                            <Text style={styles.publishBtnText}>Publish Final</Text>
+                                        </Pressable>
+                                    </>
+                                )}
                             </View>
                         )}
                     </View>
@@ -529,5 +709,34 @@ const getStyles = (theme) => StyleSheet.create({
     publishedDate: {
         fontSize: 13,
         color: '#666',
+    },
+    toggleContainer: {
+        flexDirection: 'row',
+        backgroundColor: '#eee',
+        borderRadius: 8,
+        padding: 2,
+    },
+    toggleBtn: {
+        flex: 1,
+        paddingVertical: 6,
+        alignItems: 'center',
+        borderRadius: 6,
+    },
+    toggleBtnActive: {
+        backgroundColor: '#fff',
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: 1 },
+        shadowOpacity: 0.1,
+        shadowRadius: 2,
+        elevation: 1,
+    },
+    toggleText: {
+        fontSize: 12,
+        fontWeight: '600',
+        color: '#666',
+    },
+    toggleTextActive: {
+        color: '#222',
+        fontWeight: 'bold',
     },
 });

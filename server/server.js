@@ -27,11 +27,46 @@ const { Readable } = require('stream');
 require('dotenv').config();
 
 const app = express();
+const http = require('http');
+const { Server } = require('socket.io');
+
+const server = http.createServer(app);
+const io = new Server(server, {
+    cors: {
+        origin: '*',
+        methods: ['GET', 'POST']
+    }
+});
+
 const port = process.env.PORT || 3000;
 const JWT_SECRET = process.env.JWT_SECRET || 'dev_secret_key_123';
 
 app.use(cors());
 app.use(bodyParser.json());
+
+// Socket.io connection handling
+io.on('connection', (socket) => {
+    console.log('[Socket] Client connected:', socket.id);
+
+    // Join a story room to receive updates for that story
+    socket.on('join_story', (storyId) => {
+        socket.join(`story_${storyId}`);
+        console.log(`[Socket] ${socket.id} joined story_${storyId}`);
+    });
+
+    // Leave a story room
+    socket.on('leave_story', (storyId) => {
+        socket.leave(`story_${storyId}`);
+        console.log(`[Socket] ${socket.id} left story_${storyId}`);
+    });
+
+    socket.on('disconnect', () => {
+        console.log('[Socket] Client disconnected:', socket.id);
+    });
+});
+
+// Make io accessible to routes
+app.set('io', io);
 
 // Middleware to authenticate token
 const authenticateToken = (req, res, next) => {
@@ -116,6 +151,25 @@ app.get('/api/setup', async (req, res) => {
         } catch (e) {
             // Ignore error if column already exists
         }
+
+        // Migration: Add username column with case-insensitive unique constraint
+        try {
+            await db.query(`ALTER TABLE users ADD COLUMN username VARCHAR(50)`);
+            await db.query(`CREATE UNIQUE INDEX IF NOT EXISTS users_username_lower_idx ON users (LOWER(username))`);
+        } catch (e) {
+            // Ignore if exists
+        }
+
+        // Migration: Add first_name, last_name, date_of_birth columns
+        try {
+            await db.query(`ALTER TABLE users ADD COLUMN first_name VARCHAR(100)`);
+        } catch (e) { /* exists */ }
+        try {
+            await db.query(`ALTER TABLE users ADD COLUMN last_name VARCHAR(100)`);
+        } catch (e) { /* exists */ }
+        try {
+            await db.query(`ALTER TABLE users ADD COLUMN date_of_birth DATE`);
+        } catch (e) { /* exists */ }
 
         // Create books table
         await db.query(`
@@ -245,6 +299,93 @@ app.get('/api/setup', async (req, res) => {
         );
         `);
 
+        // Create comments table
+        await db.query(`
+        CREATE TABLE IF NOT EXISTS comments(
+            id SERIAL PRIMARY KEY,
+            story_id INTEGER REFERENCES story_submissions(id) ON DELETE CASCADE,
+            chapter_id INTEGER REFERENCES submission_chapters(id) ON DELETE CASCADE,
+            user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+            paragraph_index INTEGER,
+            content TEXT NOT NULL,
+            parent_id INTEGER REFERENCES comments(id) ON DELETE CASCADE,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+        `);
+
+        // Create likes table
+        await db.query(`
+        CREATE TABLE IF NOT EXISTS likes(
+            id SERIAL PRIMARY KEY,
+            user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+            story_id INTEGER REFERENCES story_submissions(id) ON DELETE CASCADE,
+            book_id INTEGER REFERENCES books(id) ON DELETE CASCADE,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(user_id, story_id, book_id)
+        );
+        `);
+
+        // Migration: Add book_id to likes table
+        try {
+            await db.query(`ALTER TABLE likes ADD COLUMN IF NOT EXISTS book_id INTEGER REFERENCES books(id) ON DELETE CASCADE`);
+            // Drop old constraint if exists (tricky in postgres without knowing name, but we can try generic approaches or ignore)
+            // For now, we assume standard usage: either story_id OR book_id is set
+        } catch (e) {
+            // Ignore
+        }
+
+        // Create notifications table
+        await db.query(`
+        CREATE TABLE IF NOT EXISTS notifications(
+            id SERIAL PRIMARY KEY,
+            user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+            type VARCHAR(50) NOT NULL, -- 'comment', 'system', 'featured', 'like'
+            source_id INTEGER,
+            source_type VARCHAR(50), -- 'comment', 'story'
+            is_read BOOLEAN DEFAULT FALSE,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+        `);
+
+        // Migration: Add last_email_notification_at to users
+        try {
+            await db.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS last_email_notification_at TIMESTAMP`);
+        } catch (e) {
+            // Ignore
+        }
+
+        // Migration: Add parent_id to comments if missing
+        try {
+            await db.query(`ALTER TABLE comments ADD COLUMN IF NOT EXISTS parent_id INTEGER REFERENCES comments(id) ON DELETE CASCADE`);
+        } catch (e) {
+            // Ignore
+        }
+
+        // Migration: Add status WIP support (no schema change needed for string, but good to document)
+        // Existing status column is VARCHAR(20)
+
+        // Migration: Add reading goal fields to users table
+        try {
+            await db.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS reading_goal_type VARCHAR(20) DEFAULT 'books'`);
+            await db.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS reading_goal_value INTEGER DEFAULT 1`);
+        } catch (e) {
+            // Ignore if already exists
+        }
+
+        // Create reading_sessions table for tracking reading activity
+        await db.query(`
+        CREATE TABLE IF NOT EXISTS reading_sessions(
+            id SERIAL PRIMARY KEY,
+            user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+            book_id INTEGER REFERENCES books(id) ON DELETE CASCADE,
+            started_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            ended_at TIMESTAMP,
+            pages_read INTEGER DEFAULT 0,
+            minutes_read INTEGER DEFAULT 0,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+        `);
+
         // Seed data if empty (and no books exist)
         // Note: We are relying on detailed book seeding separately, or migrated data.
 
@@ -326,24 +467,123 @@ The journey was far from over. In fact, it had only just begun. The map in his p
 });
 
 // Auth: Register
-app.post('/api/register', async (req, res) => {
-    const { email, password } = req.body;
-    if (!email || !password) return res.status(400).json({ error: 'Missing fields' });
-
+// Check username availability (case-insensitive)
+app.get('/api/check-username/:username', async (req, res) => {
     try {
-        const hash = await bcrypt.hash(password, 10);
+        const { username } = req.params;
         const result = await db.query(
-            'INSERT INTO users (email, password_hash) VALUES ($1, $2) RETURNING id, email',
-            [email, hash]
+            'SELECT id FROM users WHERE LOWER(username) = LOWER($1)',
+            [username]
         );
-        const user = result.rows[0];
-        const token = jwt.sign({ id: user.id, email: user.email }, JWT_SECRET, { expiresIn: '1h' });
-        res.json({ token, user });
-    } catch (err) {
-        if (err.code === '23505') return res.status(400).json({ error: 'Email already exists' });
-        res.status(500).json({ error: err.message });
+        res.json({ available: result.rows.length === 0 });
+    } catch (e) {
+        res.status(500).json({ error: 'Failed to check username' });
     }
 });
+
+// Auth: Register
+app.post('/api/register', async (req, res) => {
+    const { email, password, username, first_name, last_name, date_of_birth } = req.body;
+
+    // Validate required fields
+    if (!email || !password || !username || !first_name) {
+        return res.status(400).json({ error: 'Email, password, username, and first name are required' });
+    }
+
+    // Validate email format
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(email)) {
+        return res.status(400).json({ error: 'Invalid email format' });
+    }
+
+    // Validate email length
+    if (email.length > 255) {
+        return res.status(400).json({ error: 'Email is too long' });
+    }
+
+    // Validate password strength
+    if (password.length < 8) {
+        return res.status(400).json({ error: 'Password must be at least 8 characters' });
+    }
+    if (password.length > 128) {
+        return res.status(400).json({ error: 'Password is too long' });
+    }
+
+    // Validate username format (alphanumeric, underscores, 3-30 chars)
+    if (!/^[a-zA-Z0-9_]{3,30}$/.test(username)) {
+        return res.status(400).json({ error: 'Username must be 3-30 characters and contain only letters, numbers, and underscores' });
+    }
+
+    // Validate first_name (letters, spaces, hyphens, apostrophes, 1-100 chars)
+    const nameRegex = /^[a-zA-Z\s\-']{1,100}$/;
+    if (!nameRegex.test(first_name)) {
+        return res.status(400).json({ error: 'First name must be 1-100 characters with only letters, spaces, hyphens, or apostrophes' });
+    }
+
+    // Validate last_name if provided
+    if (last_name && !nameRegex.test(last_name)) {
+        return res.status(400).json({ error: 'Last name must be 1-100 characters with only letters, spaces, hyphens, or apostrophes' });
+    }
+
+    // Validate date_of_birth format if provided (YYYY-MM-DD)
+    if (date_of_birth) {
+        const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
+        if (!dateRegex.test(date_of_birth)) {
+            return res.status(400).json({ error: 'Date of birth must be in YYYY-MM-DD format' });
+        }
+        // Check if it's a valid date and user is at least 13 years old
+        const dob = new Date(date_of_birth);
+        const today = new Date();
+        const age = Math.floor((today - dob) / (365.25 * 24 * 60 * 60 * 1000));
+        if (isNaN(dob.getTime())) {
+            return res.status(400).json({ error: 'Invalid date of birth' });
+        }
+        if (age < 13) {
+            return res.status(400).json({ error: 'You must be at least 13 years old to register' });
+        }
+        if (age > 150) {
+            return res.status(400).json({ error: 'Invalid date of birth' });
+        }
+    }
+
+    // Trim and sanitize inputs
+    const sanitizedEmail = email.trim().toLowerCase();
+    const sanitizedUsername = username.trim();
+    const sanitizedFirstName = first_name.trim();
+    const sanitizedLastName = last_name ? last_name.trim() : null;
+
+    try {
+        // Check if username already exists (case-insensitive)
+        const usernameCheck = await db.query(
+            'SELECT id FROM users WHERE LOWER(username) = LOWER($1)',
+            [sanitizedUsername]
+        );
+        if (usernameCheck.rows.length > 0) {
+            return res.status(400).json({ error: 'Username already taken' });
+        }
+
+        const hash = await bcrypt.hash(password, 10);
+        const result = await db.query(
+            `INSERT INTO users (email, password_hash, username, first_name, last_name, date_of_birth) 
+             VALUES ($1, $2, $3, $4, $5, $6) 
+             RETURNING id, email, username, first_name, last_name, date_of_birth`,
+            [sanitizedEmail, hash, sanitizedUsername, sanitizedFirstName, sanitizedLastName, date_of_birth || null]
+        );
+        const user = result.rows[0];
+        const token = jwt.sign({ id: user.id, email: user.email, username: user.username }, JWT_SECRET, { expiresIn: '7d' });
+        res.json({ token, user });
+    } catch (err) {
+        if (err.code === '23505') {
+            if (err.constraint?.includes('username')) {
+                return res.status(400).json({ error: 'Username already taken' });
+            }
+            return res.status(400).json({ error: 'Email already exists' });
+        }
+        console.error('[Register Error]', err);
+        res.status(500).json({ error: 'Registration failed. Please try again.' });
+    }
+});
+
 
 // Auth: Login
 app.post('/api/login', async (req, res) => {
@@ -356,18 +596,39 @@ app.post('/api/login', async (req, res) => {
         const valid = await bcrypt.compare(password, user.password_hash);
         if (!valid) return res.status(401).json({ error: 'Invalid credentials' });
 
-        const token = jwt.sign({ id: user.id, email: user.email, subscription_tier: user.subscription_tier }, JWT_SECRET, { expiresIn: '1h' });
-        res.json({ token, user: { id: user.id, email: user.email, subscription_tier: user.subscription_tier } });
+        const token = jwt.sign({
+            id: user.id,
+            email: user.email,
+            username: user.username,
+            subscription_tier: user.subscription_tier
+        }, JWT_SECRET, { expiresIn: '7d' });
+
+        res.json({
+            token,
+            user: {
+                id: user.id,
+                email: user.email,
+                username: user.username,
+                first_name: user.first_name,
+                last_name: user.last_name,
+                subscription_tier: user.subscription_tier
+            }
+        });
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
 });
 
-// Get all books (with optional filters)
+
+// Get all categories with hierarchical structure\napp.get('/api/categories', async (req, res) => {\n    try {\n        // Fetch all groups\n        const groupsRes = await db.query('SELECT * FROM category_groups ORDER BY section_order');\n        const groups = groupsRes.rows;\n\n        // Fetch all categories\n        const categoriesRes = await db.query('SELECT * FROM categories ORDER BY level, display_order, name');\n        const allCategories = categoriesRes.rows;\n\n        // Build hierarchical structure\n        const result = groups.map(group => {\n            // Get level-1 categories for this group\n            const level1Categories = allCategories.filter(\n                c => c.group_id === group.id && c.level === 1\n            );\n\n            // For each level-1, attach its level-2 children\n            const categoriesWithChildren = level1Categories.map(parent => ({\n                ...parent,\n                children: allCategories.filter(\n                    c => c.parent_category_id === parent.id && c.level === 2\n                )\n            }));\n\n            return {\n                ...group,\n                categories: categoriesWithChildren\n            };\n        });\n\n        res.json(result);\n    } catch (err) {\n        console.error(err);\n        res.status(500).json({ error: 'Failed to fetch categories' });\n    }\n});\n\n// Get all books (with optional filters)
 app.get('/api/books', async (req, res) => {
     try {
         const { type } = req.query;
-        let query = 'SELECT * FROM books';
+        let query = `
+            SELECT b.*, 
+            (SELECT COUNT(*)::int FROM likes WHERE book_id = b.id) as like_count
+            FROM books b
+        `;
         const params = [];
 
         if (type) {
@@ -609,16 +870,26 @@ app.delete('/api/readings/:bookId', authenticateToken, async (req, res) => {
 app.put('/api/readings/:bookId/progress', authenticateToken, async (req, res) => {
     try {
         const { bookId } = req.params;
-        const { position, total, progress, chapterIndex = 0 } = req.body;
+        const { position, total, progress, chapterIndex = 0, minutesRead = 0 } = req.body;
         const userId = req.user.id;
 
+        // Update progress in readings table
         await db.query(`
             UPDATE readings 
             SET current_position = $1, total_length = $2, progress = $3, last_read_at = NOW(), current_chapter_index = $4
             WHERE user_id = $5 AND book_id = $6
         `, [position, total, progress, chapterIndex, userId, bookId]);
 
-        res.json({ success: true });
+        // Create reading session record if minutesRead is provided and > 0
+        if (minutesRead && minutesRead > 0) {
+            // Estimate pages read (rough estimate: ~2 pages per minute)
+            const estimatedPages = Math.round(minutesRead * 2);
+
+            await db.query(`
+                INSERT INTO reading_sessions (user_id, book_id, minutes_read, pages_read, started_at, ended_at)
+                VALUES ($1, $2, $3, $4, NOW() - INTERVAL '1 minute' * $3, NOW())
+            `, [userId, bookId, minutesRead, estimatedPages]);
+        }
 
         res.json({ success: true });
     } catch (e) {
@@ -663,6 +934,144 @@ app.get('/api/readings/:bookId', authenticateToken, async (req, res) => {
     }
 });
 
+// Get weekly reading stats
+app.get('/api/user/reading-stats', authenticateToken, async (req, res) => {
+    try {
+        const userId = req.user.id;
+        const { week } = req.query; // Optional: YYYY-MM-DD format for start of week
+
+        // Calculate week start (Monday) and end (Sunday)
+        let weekStart, weekEnd;
+        if (week) {
+            weekStart = new Date(week);
+        } else {
+            const today = new Date();
+            const dayOfWeek = today.getDay();
+            const diff = dayOfWeek === 0 ? -6 : 1 - dayOfWeek; // Get Monday
+            weekStart = new Date(today);
+            weekStart.setDate(today.getDate() + diff);
+        }
+        weekStart.setHours(0, 0, 0, 0);
+
+        weekEnd = new Date(weekStart);
+        weekEnd.setDate(weekStart.getDate() + 7);
+
+        // Get user's reading goal
+        const userGoalRes = await db.query(
+            'SELECT reading_goal_type, reading_goal_value FROM users WHERE id = $1',
+            [userId]
+        );
+        const userGoal = userGoalRes.rows[0] || { reading_goal_type: 'books', reading_goal_value: 1 };
+
+        // Get books completed this week (reached 100% progress)
+        const completedBooksRes = await db.query(`
+            SELECT DISTINCT ON (r.book_id) 
+                r.book_id, b.title, b.author, b.cover_image_url, b.cover_color,
+                r.progress, r.last_read_at
+            FROM readings r
+            JOIN books b ON r.book_id = b.id
+            WHERE r.user_id = $1 
+                AND r.progress >= 1.0
+                AND r.last_read_at >= $2
+                AND r.last_read_at < $3
+            ORDER BY r.book_id, r.last_read_at DESC
+        `, [userId, weekStart, weekEnd]);
+
+        const completedBooks = completedBooksRes.rows;
+
+        // Get daily reading activity (reading sessions)
+        const dailyActivityRes = await db.query(`
+            SELECT 
+                DATE(started_at) as read_date,
+                SUM(minutes_read) as total_minutes,
+                SUM(pages_read) as total_pages,
+                COUNT(*) as session_count
+            FROM reading_sessions
+            WHERE user_id = $1
+                AND started_at >= $2
+                AND started_at < $3
+            GROUP BY DATE(started_at)
+            ORDER BY read_date ASC
+        `, [userId, weekStart, weekEnd]);
+
+        // Create 7-day array with activity data
+        const dailyActivity = [];
+        for (let i = 0; i < 7; i++) {
+            const date = new Date(weekStart);
+            date.setDate(weekStart.getDate() + i);
+            const dateStr = date.toISOString().split('T')[0];
+
+            const dayData = dailyActivityRes.rows.find(row => row.read_date === dateStr);
+            dailyActivity.push({
+                date: dateStr,
+                day: ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'][i],
+                minutes: dayData ? parseInt(dayData.total_minutes) : 0,
+                pages: dayData ? parseInt(dayData.total_pages) : 0,
+                sessions: dayData ? parseInt(dayData.session_count) : 0
+            });
+        }
+
+        // Calculate progress toward goal
+        let progressValue = 0;
+        let goalValue = userGoal.reading_goal_value || 1;
+
+        if (userGoal.reading_goal_type === 'books') {
+            progressValue = completedBooks.length;
+        } else if (userGoal.reading_goal_type === 'minutes') {
+            progressValue = dailyActivity.reduce((sum, day) => sum + day.minutes, 0);
+        }
+
+        const progressPercent = Math.min(100, Math.round((progressValue / goalValue) * 100));
+
+        res.json({
+            week_start: weekStart.toISOString().split('T')[0],
+            week_end: weekEnd.toISOString().split('T')[0],
+            goal: {
+                type: userGoal.reading_goal_type,
+                value: goalValue,
+                progress: progressValue,
+                percentage: progressPercent,
+                achieved: progressValue >= goalValue
+            },
+            completed_books: completedBooks,
+            daily_activity: dailyActivity
+        });
+    } catch (e) {
+        console.error('Reading stats error:', e);
+        res.status(500).json({ error: 'Failed to fetch reading stats' });
+    }
+});
+
+// Update user's reading goal
+app.post('/api/user/reading-goal', authenticateToken, async (req, res) => {
+    try {
+        const userId = req.user.id;
+        const { goal_type, goal_value } = req.body;
+
+        // Validate input
+        if (!['books', 'minutes'].includes(goal_type)) {
+            return res.status(400).json({ error: 'Invalid goal type. Must be "books" or "minutes"' });
+        }
+
+        if (!goal_value || goal_value < 1 || goal_value > 100) {
+            return res.status(400).json({ error: 'Goal value must be between 1 and 100' });
+        }
+
+        await db.query(
+            'UPDATE users SET reading_goal_type = $1, reading_goal_value = $2 WHERE id = $3',
+            [goal_type, goal_value, userId]
+        );
+
+        res.json({
+            success: true,
+            goal: { type: goal_type, value: goal_value }
+        });
+    } catch (e) {
+        console.error('Update goal error:', e);
+        res.status(500).json({ error: 'Failed to update reading goal' });
+    }
+});
+
 // ==================== WRITER PLATFORM ENDPOINTS ====================
 
 // Get user's stories (drafts + published)
@@ -685,15 +1094,38 @@ app.get('/api/writer/stories', authenticateToken, async (req, res) => {
 app.post('/api/writer/stories', authenticateToken, async (req, res) => {
     try {
         const userId = req.user.id;
-        const { title = 'Untitled Story' } = req.body;
+        const {
+            title = 'Untitled Story',
+            description,
+            content_type,
+            file_upload_key,
+            is_file_upload,
+            category_ids = []
+        } = req.body;
 
+        // Insert submission
         const result = await db.query(`
-            INSERT INTO story_submissions (user_id, title, status)
-            VALUES ($1, $2, 'draft')
+            INSERT INTO story_submissions (
+                user_id, title, description, content_type, 
+                file_upload_key, is_file_upload, status
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, 'draft')
             RETURNING *
-        `, [userId, title]);
+        `, [userId, title, description, content_type, file_upload_key, is_file_upload]);
 
-        res.json(result.rows[0]);
+        const submission = result.rows[0];
+
+        // Link categories if provided
+        if (category_ids && category_ids.length > 0) {
+            for (const categoryId of category_ids) {
+                await db.query(
+                    'INSERT INTO submission_categories (submission_id, category_id) VALUES ($1, $2) ON CONFLICT DO NOTHING',
+                    [submission.id, categoryId]
+                );
+            }
+        }
+
+        res.json(submission);
     } catch (e) {
         console.error(e);
         res.status(500).json({ error: 'Failed to create story' });
@@ -780,12 +1212,551 @@ app.delete('/api/writer/stories/:id', authenticateToken, async (req, res) => {
             return res.status(404).json({ error: 'Story not found' });
         }
 
-        res.json({ message: 'Story deleted successfully' });
+        res.json({ message: 'Story deleted' });
     } catch (e) {
         console.error(e);
         res.status(500).json({ error: 'Failed to delete story' });
     }
 });
+
+// Publish story (Draft -> Published or WIP)
+app.post('/api/writer/stories/:id/publish', authenticateToken, async (req, res) => {
+    try {
+        const { id } = req.params;
+        const userId = req.user.id;
+        const body = req.body || {};
+        const status = body.status || 'published'; // 'published' or 'wip'
+
+        console.log('[DEBUG] Publish request:', { id, userId, status, body: req.body });
+
+
+        const ValidStatuses = ['published', 'wip'];
+        if (!ValidStatuses.includes(status)) {
+            return res.status(400).json({ error: 'Invalid status' });
+        }
+
+        // Get the submission first to validate
+        const storyResult = await db.query(`
+            SELECT * FROM story_submissions 
+            WHERE id = $1 AND user_id = $2
+        `, [id, userId]);
+
+        if (storyResult.rows.length === 0) {
+            return res.status(404).json({ error: 'Story not found' });
+        }
+
+        const story = storyResult.rows[0];
+
+        // Basic validation
+        if (!story.title) {
+            return res.status(400).json({ error: 'Title is required to publish' });
+        }
+
+        // Update status
+        const result = await db.query(`
+            UPDATE story_submissions 
+            SET status = $1, published_at = NOW(), updated_at = NOW()
+            WHERE id = $2 AND user_id = $3
+            RETURNING *
+        `, [status, id, userId]);
+
+        console.log('[DEBUG] Publish success:', { id, status });
+        res.json(result.rows[0]);
+    } catch (e) {
+        console.error('[DEBUG] Publish error:', e.message, e.detail || '');
+        res.status(500).json({ error: 'Failed to publish story' });
+    }
+});
+
+// Get public story (WIP or Published)
+app.get('/api/stories/:id', async (req, res) => {
+    try {
+        const { id } = req.params;
+
+        const storyRes = await db.query(`
+            SELECT s.*, u.email as author_name 
+            FROM story_submissions s
+            JOIN users u ON s.user_id = u.id
+            WHERE s.id = $1 AND (s.status = 'published' OR s.status = 'wip')
+        `, [id]);
+
+        if (storyRes.rows.length === 0) {
+            return res.status(404).json({ error: 'Story not found' });
+        }
+
+        const story = storyRes.rows[0];
+
+        // Fetch Chapters
+        const chapRes = await db.query(`
+            SELECT * FROM submission_chapters 
+            WHERE submission_id = $1 
+            ORDER BY sequence_number ASC
+        `, [id]);
+
+        story.chapters = chapRes.rows;
+
+        // If no chapters, use content_text as pseudo-chapter
+        if (story.chapters.length === 0 && story.content_text) {
+            story.chapters = [{
+                id: null,
+                title: 'Full Story',
+                content: story.content_text,
+                sequence_number: 1
+            }];
+        }
+
+        res.json(story);
+    } catch (e) {
+        console.error(e);
+        res.status(500).json({ error: 'Failed to fetch story' });
+    }
+});
+
+
+// ==================== COMMENTS & NOTIFICATIONS ====================
+
+// Add Comment
+app.post('/api/comments', authenticateToken, async (req, res) => {
+    try {
+        const userId = req.user.id;
+        const { story_id, chapter_id, paragraph_index, content } = req.body;
+
+        console.log('[DEBUG] Posting comment:', { userId, story_id, chapter_id, paragraph_index, content: content?.substring(0, 50) });
+
+        // 1. Insert Comment
+        const commentRes = await db.query(`
+            INSERT INTO comments(story_id, chapter_id, user_id, paragraph_index, content)
+        VALUES($1, $2, $3, $4, $5)
+        RETURNING *
+            `, [story_id, chapter_id, userId, paragraph_index, content]);
+        const comment = commentRes.rows[0];
+
+        // 2. Notify Writer
+        // Get story owner
+        const storyRes = await db.query('SELECT user_id, title FROM story_submissions WHERE id = $1', [story_id]);
+        if (storyRes.rows.length > 0) {
+            const story = storyRes.rows[0];
+            const writerId = story.user_id;
+
+            // Don't notify if commenting on own story
+            if (writerId !== userId) {
+                // a. In-App Notification
+                await db.query(`
+                    INSERT INTO notifications(user_id, type, source_id, source_type)
+        VALUES($1, 'comment', $2, 'comment')
+            `, [writerId, comment.id]);
+
+                // b. Email (Mock with Throttling)
+                const writerUserRes = await db.query('SELECT email, last_email_notification_at FROM users WHERE id = $1', [writerId]);
+                const writer = writerUserRes.rows[0];
+
+                const now = new Date();
+                const lastSent = writer.last_email_notification_at ? new Date(writer.last_email_notification_at) : new Date(0);
+                const diffHours = (now - lastSent) / 1000 / 60 / 60;
+
+                if (diffHours >= 1) {
+                    // Send Email (Mock)
+                    console.log(`[EMAIL MOCK] Sending 'New Comment' email to ${writer.email} for story "${story.title}"`);
+
+                    // Update timestamp
+                    await db.query('UPDATE users SET last_email_notification_at = NOW() WHERE id = $1', [writerId]);
+                } else {
+                    console.log(`[EMAIL MOCK] Suppressing email to ${writer.email} (Throttled)`);
+                }
+            }
+        }
+
+        // Return populated comment
+        const userRes = await db.query('SELECT id, email FROM users WHERE id = $1', [userId]);
+        comment.user = userRes.rows[0]; // Simple user object
+
+        // 3. Broadcast via Socket.io to all users reading this story
+        const io = req.app.get('io');
+        io.to(`story_${story_id}`).emit('new_comment', {
+            ...comment,
+            replies: []
+        });
+
+        res.json(comment);
+    } catch (e) {
+        console.error('[DEBUG] Comment POST error:', e.message, e.detail || '', e.code || '');
+        res.status(500).json({ error: 'Failed to post comment' });
+    }
+});
+
+// Get Comments for Story
+app.get('/api/stories/:id/comments', async (req, res) => {
+    try {
+        const { id } = req.params;
+
+        const result = await db.query(`
+            SELECT c.*, u.email as user_email
+            FROM comments c
+            JOIN users u ON c.user_id = u.id
+            WHERE c.story_id = $1
+            ORDER BY c.created_at ASC
+            `, [id]);
+
+        // Map for cleaner frontend consumption
+        const comments = result.rows.map(row => ({
+            ...row,
+            user: { id: row.user_id, email: row.user_email } // pseudo-populate
+        }));
+
+        res.json(comments);
+    } catch (e) {
+        console.error(e);
+        res.status(500).json({ error: 'Failed to fetch comments' });
+    }
+});
+
+// Get WIP Stories (Public Feed)
+app.get('/api/wip', async (req, res) => {
+    try {
+        const result = await db.query(`
+            SELECT s.*, u.email as author_name,
+                   (SELECT COUNT(*) FROM likes WHERE story_id = s.id) as like_count
+            FROM story_submissions s
+            JOIN users u ON s.user_id = u.id
+            WHERE s.status = 'wip'
+            ORDER BY s.updated_at DESC
+        `);
+        res.json(result.rows);
+    } catch (e) {
+        console.error(e);
+        res.status(500).json({ error: 'Failed to fetch WIP stories' });
+    }
+});
+
+// Get User's Own Comments on a Story (Private View)
+app.get('/api/stories/:id/my-comments', authenticateToken, async (req, res) => {
+    try {
+        const { id } = req.params;
+        const userId = req.user.id;
+
+        // Get top-level comments by this user
+        const result = await db.query(`
+            SELECT c.*, u.email as user_email
+            FROM comments c
+            JOIN users u ON c.user_id = u.id
+            WHERE c.story_id = $1 AND c.user_id = $2 AND c.parent_id IS NULL
+            ORDER BY c.created_at ASC
+        `, [id, userId]);
+
+        // For each comment, get replies (from writer)
+        const comments = await Promise.all(result.rows.map(async (row) => {
+            const repliesRes = await db.query(`
+                SELECT r.*, u.email as user_email
+                FROM comments r
+                JOIN users u ON r.user_id = u.id
+                WHERE r.parent_id = $1
+                ORDER BY r.created_at ASC
+            `, [row.id]);
+
+            return {
+                ...row,
+                user: { id: row.user_id, email: row.user_email },
+                replies: repliesRes.rows.map(r => ({
+                    ...r,
+                    user: { id: r.user_id, email: r.user_email }
+                }))
+            };
+        }));
+
+        res.json(comments);
+    } catch (e) {
+        console.error(e);
+        res.status(500).json({ error: 'Failed to fetch comments' });
+    }
+});
+
+// Writer Reply to Comment
+app.post('/api/comments/:id/reply', authenticateToken, async (req, res) => {
+    try {
+        const { id } = req.params; // Parent comment ID
+        const userId = req.user.id;
+        const { content } = req.body;
+
+        // Get parent comment to verify writer ownership
+        const parentRes = await db.query(`
+            SELECT c.*, s.user_id as writer_id
+            FROM comments c
+            JOIN story_submissions s ON c.story_id = s.id
+            WHERE c.id = $1
+        `, [id]);
+
+        if (parentRes.rows.length === 0) {
+            return res.status(404).json({ error: 'Comment not found' });
+        }
+
+        const parent = parentRes.rows[0];
+
+        // Only story owner can reply
+        if (parent.writer_id !== userId) {
+            return res.status(403).json({ error: 'Only the story author can reply' });
+        }
+
+        // Insert reply
+        const replyRes = await db.query(`
+            INSERT INTO comments(story_id, chapter_id, user_id, content, parent_id)
+            VALUES($1, $2, $3, $4, $5)
+            RETURNING *
+        `, [parent.story_id, parent.chapter_id, userId, content, id]);
+
+        const reply = replyRes.rows[0];
+
+        // Notify the original commenter
+        await db.query(`
+            INSERT INTO notifications(user_id, type, source_id, source_type)
+            VALUES($1, 'reply', $2, 'comment')
+        `, [parent.user_id, reply.id]);
+
+        // Add user info
+        const userRes = await db.query('SELECT id, email FROM users WHERE id = $1', [userId]);
+        reply.user = userRes.rows[0];
+
+        // Broadcast reply via Socket.io
+        const io = req.app.get('io');
+        io.to(`story_${parent.story_id}`).emit('new_reply', {
+            parentId: parseInt(id),
+            reply: reply
+        });
+
+        res.json(reply);
+    } catch (e) {
+        console.error(e);
+        res.status(500).json({ error: 'Failed to post reply' });
+    }
+});
+
+// Like a Story
+app.post('/api/stories/:id/like', authenticateToken, async (req, res) => {
+    try {
+        const { id } = req.params;
+        const userId = req.user.id;
+
+        // Check if already liked
+        const existing = await db.query('SELECT id FROM likes WHERE user_id = $1 AND story_id = $2', [userId, id]);
+
+        if (existing.rows.length > 0) {
+            return res.json({ liked: true, message: 'Already liked' });
+        }
+
+        await db.query('INSERT INTO likes(user_id, story_id) VALUES($1, $2)', [userId, id]);
+
+        // Get new count
+        const countRes = await db.query('SELECT COUNT(*) as count FROM likes WHERE story_id = $1', [id]);
+
+        res.json({ liked: true, count: parseInt(countRes.rows[0].count) });
+    } catch (e) {
+        console.error(e);
+        res.status(500).json({ error: 'Failed to like story' });
+    }
+});
+
+// Unlike a Story
+app.delete('/api/stories/:id/like', authenticateToken, async (req, res) => {
+    try {
+        const { id } = req.params;
+        const userId = req.user.id;
+
+        await db.query('DELETE FROM likes WHERE user_id = $1 AND story_id = $2', [userId, id]);
+
+        // Get new count
+        const countRes = await db.query('SELECT COUNT(*) as count FROM likes WHERE story_id = $1', [id]);
+
+        res.json({ liked: false, count: parseInt(countRes.rows[0].count) });
+    } catch (e) {
+        console.error(e);
+        res.status(500).json({ error: 'Failed to unlike story' });
+    }
+});
+
+// Get Like Status and Count
+app.get('/api/stories/:id/likes', async (req, res) => {
+    try {
+        const { id } = req.params;
+
+        const countRes = await db.query('SELECT COUNT(*) as count FROM likes WHERE story_id = $1', [id]);
+
+        res.json({ count: parseInt(countRes.rows[0].count) });
+    } catch (e) {
+        console.error(e);
+        res.status(500).json({ error: 'Failed to get likes' });
+    }
+});
+
+// Get Like Status for Authenticated User
+app.get('/api/stories/:id/liked', authenticateToken, async (req, res) => {
+    try {
+        const { id } = req.params;
+        const userId = req.user.id;
+
+        const result = await db.query('SELECT id FROM likes WHERE user_id = $1 AND story_id = $2', [userId, id]);
+        const countRes = await db.query('SELECT COUNT(*) as count FROM likes WHERE story_id = $1', [id]);
+
+        res.json({
+            liked: result.rows.length > 0,
+            count: parseInt(countRes.rows[0].count)
+        });
+    } catch (e) {
+        console.error(e);
+        res.status(500).json({ error: 'Failed to check like status' });
+    }
+});
+
+// Like a Book
+app.post('/api/books/:id/like', authenticateToken, async (req, res) => {
+    try {
+        const { id } = req.params;
+        const userId = req.user.id;
+
+        // Check if already liked
+        const existing = await db.query('SELECT id FROM likes WHERE user_id = $1 AND book_id = $2', [userId, id]);
+
+        if (existing.rows.length > 0) {
+            return res.json({ liked: true, message: 'Already liked' });
+        }
+
+        await db.query('INSERT INTO likes(user_id, book_id) VALUES($1, $2)', [userId, id]);
+
+        // Get new count
+        const countRes = await db.query('SELECT COUNT(*) as count FROM likes WHERE book_id = $1', [id]);
+
+        res.json({ liked: true, count: parseInt(countRes.rows[0].count) });
+    } catch (e) {
+        console.error(e);
+        res.status(500).json({ error: 'Failed to like book' });
+    }
+});
+
+// Unlike a Book
+app.delete('/api/books/:id/like', authenticateToken, async (req, res) => {
+    try {
+        const { id } = req.params;
+        const userId = req.user.id;
+
+        await db.query('DELETE FROM likes WHERE user_id = $1 AND book_id = $2', [userId, id]);
+
+        // Get new count
+        const countRes = await db.query('SELECT COUNT(*) as count FROM likes WHERE book_id = $1', [id]);
+
+        res.json({ liked: false, count: parseInt(countRes.rows[0].count) });
+    } catch (e) {
+        console.error(e);
+        res.status(500).json({ error: 'Failed to unlike book' });
+    }
+});
+
+// Get Like Status for Authenticated User (Book)
+app.get('/api/books/:id/liked', authenticateToken, async (req, res) => {
+    try {
+        const { id } = req.params;
+        const userId = req.user.id;
+
+        const result = await db.query('SELECT id FROM likes WHERE user_id = $1 AND book_id = $2', [userId, id]);
+        const countRes = await db.query('SELECT COUNT(*) as count FROM likes WHERE book_id = $1', [id]);
+
+        res.json({
+            liked: result.rows.length > 0,
+            count: parseInt(countRes.rows[0].count)
+        });
+    } catch (e) {
+        console.error(e);
+        res.status(500).json({ error: 'Failed to check like status' });
+    }
+});
+
+// Get Public Like Count (Book)
+app.get('/api/books/:id/likes', async (req, res) => {
+    try {
+        const { id } = req.params;
+        const countRes = await db.query('SELECT COUNT(*) as count FROM likes WHERE book_id = $1', [id]);
+        res.json({ count: parseInt(countRes.rows[0].count) });
+    } catch (e) {
+        console.error(e);
+        res.status(500).json({ error: 'Failed to get likes' });
+    }
+});
+
+// Get All Comments on Writer's Stories (Writer Inbox View)
+app.get('/api/writer/comments', authenticateToken, async (req, res) => {
+    try {
+        const userId = req.user.id;
+
+        // Get all top-level comments on stories owned by this user
+        const result = await db.query(`
+            SELECT c.*, u.email as commenter_email, s.title as story_title
+            FROM comments c
+            JOIN users u ON c.user_id = u.id
+            JOIN story_submissions s ON c.story_id = s.id
+            WHERE s.user_id = $1 AND c.parent_id IS NULL
+            ORDER BY c.created_at DESC
+        `, [userId]);
+
+        // Get replies for each comment
+        const comments = await Promise.all(result.rows.map(async (row) => {
+            const repliesRes = await db.query(`
+                SELECT r.*, u.email as user_email
+                FROM comments r
+                JOIN users u ON r.user_id = u.id
+                WHERE r.parent_id = $1
+                ORDER BY r.created_at ASC
+            `, [row.id]);
+
+            return {
+                ...row,
+                commenter: { id: row.user_id, email: row.commenter_email },
+                replies: repliesRes.rows.map(r => ({
+                    ...r,
+                    user: { id: r.user_id, email: r.user_email }
+                }))
+            };
+        }));
+
+        res.json(comments);
+    } catch (e) {
+        console.error(e);
+        res.status(500).json({ error: 'Failed to fetch writer comments' });
+    }
+});
+
+// Get Notifications (Inbox)
+app.get('/api/notifications', authenticateToken, async (req, res) => {
+    try {
+        const userId = req.user.id;
+        const result = await db.query(`
+            SELECT n.*,
+            c.content as comment_content,
+            s.title as story_title
+            FROM notifications n
+            LEFT JOIN comments c ON n.source_id = c.id AND n.source_type = 'comment'
+            LEFT JOIN story_submissions s ON c.story_id = s.id
+            WHERE n.user_id = $1
+            ORDER BY n.created_at DESC
+            `, [userId]);
+
+        res.json(result.rows);
+    } catch (e) {
+        console.error(e);
+        res.status(500).json({ error: 'Failed to fetch notifications' });
+    }
+});
+
+// Mark Notification Read
+app.put('/api/notifications/:id/read', authenticateToken, async (req, res) => {
+    try {
+        const { id } = req.params;
+        const userId = req.user.id;
+        await db.query('UPDATE notifications SET is_read = TRUE WHERE id = $1 AND user_id = $2', [id, userId]);
+        res.json({ success: true });
+    } catch (e) {
+        console.error(e);
+        res.status(500).json({ error: 'Failed to update notification' });
+    }
+});
+
+
 
 // ==================== CHAPTER MANAGEMENT ENDPOINTS ====================
 
@@ -833,10 +1804,10 @@ app.post('/api/writer/stories/:id/chapters', authenticateToken, async (req, res)
         const nextSeq = maxSeq.rows[0].max_seq + 1;
 
         const result = await db.query(`
-            INSERT INTO submission_chapters (submission_id, title, sequence_number, content)
-            VALUES ($1, $2, $3, $4)
-            RETURNING *
-        `, [id, title || `Chapter ${nextSeq}`, nextSeq, content || '']);
+            INSERT INTO submission_chapters(submission_id, title, sequence_number, content)
+        VALUES($1, $2, $3, $4)
+        RETURNING *
+            `, [id, title || `Chapter ${nextSeq} `, nextSeq, content || '']);
 
         res.json(result.rows[0]);
     } catch (e) {
@@ -861,11 +1832,11 @@ app.put('/api/writer/stories/:id/chapters/:chapterId', authenticateToken, async 
         const result = await db.query(`
             UPDATE submission_chapters
             SET title = COALESCE($1, title),
-                content = COALESCE($2, content),
-                updated_at = NOW()
+            content = COALESCE($2, content),
+            updated_at = NOW()
             WHERE id = $3 AND submission_id = $4
-            RETURNING *
-        `, [title, content, chapterId, id]);
+        RETURNING *
+            `, [title, content, chapterId, id]);
 
         if (result.rows.length === 0) {
             return res.status(404).json({ error: 'Chapter not found' });
@@ -923,112 +1894,6 @@ app.post('/api/writer/stories/:id/chapters/reorder', authenticateToken, async (r
     } catch (e) {
         console.error(e);
         res.status(500).json({ error: 'Failed to reorder chapters' });
-    }
-});
-
-// Publish story
-app.post('/api/writer/stories/:id/publish', authenticateToken, async (req, res) => {
-    try {
-        const { id } = req.params;
-        const userId = req.user.id;
-
-        // Get the submission
-        const storyResult = await db.query(`
-            SELECT * FROM story_submissions 
-            WHERE id = $1 AND user_id = $2
-        `, [id, userId]);
-
-        if (storyResult.rows.length === 0) {
-            return res.status(404).json({ error: 'Submission not found' });
-        }
-
-        const story = storyResult.rows[0];
-        const contentType = story.content_type || 'story';
-
-        // Get user email for author name
-        const userResult = await db.query('SELECT email FROM users WHERE id = $1', [userId]);
-        const authorName = userResult.rows[0]?.email || 'Anonymous';
-
-        // BOOK PUBLISHING LOGIC
-        if (contentType === 'book') {
-            // Get chapters
-            const chaptersResult = await db.query(
-                'SELECT * FROM submission_chapters WHERE submission_id = $1 ORDER BY sequence_number',
-                [id]
-            );
-
-            // Validation: need title and either chapters OR content_text
-            if (!story.title || (chaptersResult.rows.length === 0 && !story.content_text)) {
-                return res.status(400).json({ error: 'Title and content (or chapters) are required to publish a book' });
-            }
-
-            // Insert into books table as type='novel'
-            const bookResult = await db.query(`
-                INSERT INTO books (title, author, genre, cover_color, cover_image_url, type, reading_time, is_featured)
-                VALUES ($1, $2, $3, $4, $5, 'novel', $6, false)
-                RETURNING id
-            `, [story.title, authorName, story.genre, story.cover_color || '#6A4C93', story.cover_image_url, story.reading_time]);
-
-            const bookId = bookResult.rows[0].id;
-
-            // If chapters exist, copy them; otherwise create one from content_text
-            if (chaptersResult.rows.length > 0) {
-                // Copy all chapters to books.chapters table
-                for (const ch of chaptersResult.rows) {
-                    await db.query(`
-                        INSERT INTO chapters (book_id, title, sequence_number, content)
-                        VALUES ($1, $2, $3, $4)
-                    `, [bookId, ch.title, ch.sequence_number, ch.content]);
-                }
-            } else {
-                // Create single chapter from content_text
-                await db.query(`
-                    INSERT INTO chapters (book_id, title, sequence_number, content)
-                    VALUES ($1, $2, 1, $3)
-                `, [bookId, 'Chapter 1', story.content_text]);
-            }
-
-            // Update submission status
-            await db.query(
-                'UPDATE story_submissions SET status = $1, published_at = NOW() WHERE id = $2',
-                ['published', id]
-            );
-
-            res.json({ message: 'Book published successfully', bookId, type: 'novel' });
-        }
-        // STORY PUBLISHING LOGIC
-        else {
-            // Validation
-            if (!story.title || !story.content_text) {
-                return res.status(400).json({ error: 'Title and content are required to publish a story' });
-            }
-
-            // Insert into books table as type='story'
-            const bookResult = await db.query(`
-                INSERT INTO books (title, author, genre, cover_color, cover_image_url, type, content, reading_time, is_featured)
-                VALUES ($1, $2, $3, $4, $5, 'story', $6, $7, false)
-                RETURNING id
-            `, [story.title, authorName, story.genre, story.cover_color || '#E3F2FD', story.cover_image_url, story.content_text, story.reading_time]);
-
-            const bookId = bookResult.rows[0].id;
-
-            // Create single chapter
-            await db.query(`
-                INSERT INTO chapters (book_id, title, sequence_number, content)
-                VALUES ($1, 'Full Story', 1, $2)
-            `, [bookId, story.content_text]);
-
-            // Update submission status
-            await db.query(
-                'UPDATE story_submissions SET status = $1, published_at = NOW() WHERE id = $2',
-                ['published', id]
-            );
-
-            res.json({ message: 'Story published successfully', bookId, type: 'story' });
-        }
-    } catch (e) {
-        console.error(e);
-        res.status(500).json({ error: 'Failed to publish' });
     }
 });
 
@@ -1093,7 +1958,7 @@ app.post('/api/upload-file', authenticateToken, upload.single('file'), async (re
             return res.status(400).json({ error: 'No file uploaded' });
         }
 
-        const fileKey = `uploads/${req.user.id}/${Date.now()}-${req.file.originalname}`;
+        const fileKey = `uploads / ${req.user.id}/${Date.now()}-${req.file.originalname}`;
         const fileBuffer = await fs.readFile(req.file.path);
 
         // Upload to S3
@@ -1169,7 +2034,19 @@ app.post('/api/parse-file', authenticateToken, async (req, res) => {
     }
 });
 
-app.listen(port, () => {
+// Force fix likes table schema
+app.get('/api/fix-likes-schema', async (req, res) => {
+    try {
+        await db.query(`ALTER TABLE likes ADD COLUMN IF NOT EXISTS book_id INTEGER REFERENCES books(id) ON DELETE CASCADE`);
+        res.json({ message: 'Likes schema updated: book_id added' });
+    } catch (e) {
+        console.error("Schema Fix Error:", e);
+        res.status(500).json({ error: e.message });
+    }
+});
+
+server.listen(port, () => {
     console.log(`Server running at http://localhost:${port}`);
+    console.log(`Socket.io enabled for real-time updates`);
     console.log(`Run "curl http://localhost:${port}/api/setup" to initialize DB.`);
 });

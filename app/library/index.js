@@ -1,14 +1,27 @@
-import { View, Text, ScrollView, TextInput, TouchableOpacity, Image, StyleSheet, Dimensions, LinearGradient } from 'react-native';
+import { View, Text, TextInput, Image, TouchableOpacity, ScrollView, StyleSheet, Platform, Dimensions } from 'react-native';
 import { Stack, useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { API_URL } from '../../lib/api';
-import { ChevronLeft, Search, Star } from 'lucide-react-native';
+import { ChevronLeft, Search, Heart } from 'lucide-react-native';
 import HeaderProfile from '../../components/HeaderProfile';
 import CustomHeader from '../../components/CustomHeader';
 import { useTheme } from '../../lib/theme';
+import { useFocusEffect } from '@react-navigation/native';
+
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { startReading, getReadings } from '../../lib/api';
+import Hero from '../../components/Hero';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
+
+// Formatter for like counts
+const formatLikes = (num) => {
+    if (!num) return '0';
+    if (num >= 1000000) return (num / 1000000).toFixed(1) + 'M';
+    if (num >= 1000) return (num / 1000).toFixed(1) + 'k';
+    return num.toString();
+};
 
 export default function Library() {
     const { theme } = useTheme();
@@ -19,22 +32,66 @@ export default function Library() {
     const [loading, setLoading] = useState(true);
     const [searchQuery, setSearchQuery] = useState('');
     const [featuredBook, setFeaturedBook] = useState(null);
+    const [readingBookIds, setReadingBookIds] = useState(new Set());
+    const [isScrollingDown, setIsScrollingDown] = useState(false);
+    const lastScrollY = useRef(0);
+    const scrollViewRef = useRef(null);
+
+    // Platform-specific scroll tracking
+    useEffect(() => {
+        if (Platform.OS === 'web' && scrollViewRef.current) {
+            console.log('Setting up web scroll listener on ScrollView(library)');
+
+            // Find the actual scrollable div element
+            const scrollElement = scrollViewRef.current.getScrollableNode?.() || scrollViewRef.current;
+
+            const handleScroll = (e) => {
+                const currentScrollY = e.target.scrollTop || 0;
+                const scrollDelta = currentScrollY - lastScrollY.current;
+                const threshold = 5;
+
+                if (scrollDelta > threshold && !isScrollingDown) {
+                    setIsScrollingDown(true);
+                } else if (scrollDelta < -threshold && isScrollingDown) {
+                    setIsScrollingDown(false);
+                }
+
+                lastScrollY.current = currentScrollY;
+            };
+
+            scrollElement.addEventListener('scroll', handleScroll, { passive: true });
+            return () => {
+                scrollElement.removeEventListener('scroll', handleScroll);
+            };
+        }
+    }, [isScrollingDown]);
+
+    // Mobile scroll handler
+    const handleScrollMobile = (event) => {
+        const currentScrollY = event.nativeEvent.contentOffset.y;
+        const scrollDelta = currentScrollY - lastScrollY.current;
+        const threshold = 5;
+
+        if (scrollDelta > threshold && !isScrollingDown) {
+            setIsScrollingDown(true);
+        } else if (scrollDelta < -threshold && isScrollingDown) {
+            setIsScrollingDown(false);
+        }
+
+        lastScrollY.current = currentScrollY;
+    };
 
     // Fetch books
     useEffect(() => {
         fetch(`${API_URL}/api/books`)
             .then(res => res.json())
             .then(data => {
-                // Add mock ratings (in production, this would come from the API)
-                const booksWithRatings = data.map(book => ({
-                    ...book,
-                    rating: (Math.random() * 2 + 3).toFixed(1) // Random rating between 3.0-5.0
-                }));
-                setBooks(booksWithRatings);
-                setFilteredBooks(booksWithRatings);
+
+                setBooks(data);
+                setFilteredBooks(data);
                 // Set featured book to first one
-                if (booksWithRatings.length > 0) {
-                    setFeaturedBook(booksWithRatings[0]);
+                if (data.length > 0) {
+                    setFeaturedBook(data[0]);
                 }
                 setLoading(false);
             })
@@ -43,6 +100,28 @@ export default function Library() {
                 setLoading(false);
             });
     }, []);
+
+    // Check reading status on focus
+    useFocusEffect(
+        useCallback(() => {
+            checkReadingStatus();
+        }, [])
+    );
+
+    const checkReadingStatus = async () => {
+        try {
+            const token = await AsyncStorage.getItem('userToken');
+            if (token) {
+                const readings = await getReadings(token);
+                const ids = new Set(readings.map(r => r.book_id));
+                setReadingBookIds(ids);
+            } else {
+                setReadingBookIds(new Set());
+            }
+        } catch (e) {
+            console.error("Failed to check reading status", e);
+        }
+    };
 
     // Search filter
     useEffect(() => {
@@ -67,6 +146,31 @@ export default function Library() {
         return url;
     };
 
+    const handleStartReading = async (bookId) => {
+        try {
+            const token = await AsyncStorage.getItem('userToken');
+            if (!token) {
+                // Not logged in -> Redirect to Login
+                router.push('/auth/login');
+                return;
+            }
+
+            // Logged in -> Start Reading (Checkout) if not already reading
+            // If already reading, it's just a "Continue" action which also leads to reader
+            if (!readingBookIds.has(bookId)) {
+                await startReading(bookId, token);
+                // Update local state immediately so UI reflects it if we come back
+                setReadingBookIds(prev => new Set(prev).add(bookId));
+            }
+
+            router.push(`/read/${bookId}`);
+        } catch (e) {
+            console.error("Failed to start reading", e);
+            // Even if API fails (e.g. already reading), try to navigate
+            router.push(`/read/${bookId}`);
+        }
+    };
+
     // Group books by genre
     const booksByGenre = filteredBooks.reduce((acc, book) => {
         const genre = book.genre || 'Uncategorized';
@@ -80,105 +184,114 @@ export default function Library() {
     if (loading) return <View style={{ flex: 1, justifyContent: 'center', backgroundColor: theme.background }}><Text style={{ color: theme.text, textAlign: 'center' }}>Loading...</Text></View>;
 
     return (
-        <View style={styles.container}>
+        <ScrollView
+            ref={scrollViewRef}
+            style={styles.container}
+            showsVerticalScrollIndicator={false}
+            onScroll={Platform.OS !== 'web' ? handleScrollMobile : undefined}
+            scrollEventThrottle={16}
+        >
             <Stack.Screen options={{ headerShown: false }} />
 
-            <CustomHeader />
+            <Hero isScrollingDown={isScrollingDown} />
 
-            <ScrollView style={styles.content} showsVerticalScrollIndicator={false}>
-                {/* Hero Banner */}
-                {featuredBook && (
-                    <TouchableOpacity
-                        onPress={() => router.push(`/read/${featuredBook.id}`)}
-                        activeOpacity={0.95}
-                    >
-                        <View style={styles.heroBanner}>
-                            <Image
-                                source={{ uri: getImageUrl(featuredBook.cover_image_url) }}
-                                style={styles.heroImage}
-                                resizeMode="cover"
-                            />
-                            <View style={styles.heroGradient}>
-                                <View style={styles.heroContent}>
-                                    <Text style={styles.heroTag}>FEATURED</Text>
-                                    <Text style={styles.heroTitle}>{featuredBook.title}</Text>
-                                    <Text style={styles.heroAuthor}>by {featuredBook.author}</Text>
-                                    <View style={styles.heroRating}>
-                                        <Star size={16} color="#FFD700" fill="#FFD700" />
-                                        <Text style={styles.heroRatingText}>{featuredBook.rating}</Text>
-                                    </View>
-                                    <TouchableOpacity style={styles.heroButton}>
-                                        <Text style={styles.heroButtonText}>Start Reading</Text>
-                                    </TouchableOpacity>
+            {/* Hero Banner */}
+            {featuredBook && (
+                <TouchableOpacity
+                    onPress={() => handleStartReading(featuredBook.id)}
+                    activeOpacity={0.95}
+                >
+                    <View style={styles.heroBanner}>
+                        <Image
+                            source={{ uri: getImageUrl(featuredBook.cover_image_url) }}
+                            style={styles.heroImage}
+                            resizeMode="cover"
+                        />
+                        <View style={styles.heroGradient}>
+                            <View style={styles.heroContent}>
+                                <Text style={styles.heroTag}>FEATURED</Text>
+                                <Text style={styles.heroTitle}>{featuredBook.title}</Text>
+                                <Text style={styles.heroAuthor}>by {featuredBook.author}</Text>
+                                <View style={styles.heroRating}>
+                                    <Heart size={16} color="#E91E63" fill="#E91E63" />
+                                    <Text style={styles.heroRatingText}>{formatLikes(featuredBook.like_count)}</Text>
                                 </View>
+                                <TouchableOpacity
+                                    style={styles.heroButton}
+                                    onPress={() => handleStartReading(featuredBook.id)}
+                                >
+                                    <Text style={styles.heroButtonText}>
+                                        {readingBookIds.has(featuredBook.id) ? 'Continue Reading' : 'Start Reading'}
+                                    </Text>
+                                </TouchableOpacity>
                             </View>
                         </View>
-                    </TouchableOpacity>
-                )}
-
-                {/* Search Bar */}
-                <View style={styles.searchContainer}>
-                    <Search color={theme.textSecondary} size={20} style={styles.searchIcon} />
-                    <TextInput
-                        style={styles.searchInput}
-                        placeholder="Search titles or authors..."
-                        value={searchQuery}
-                        onChangeText={setSearchQuery}
-                        placeholderTextColor={theme.textSecondary}
-                    />
-                </View>
-
-                {/* Genre Rows */}
-                {Object.keys(booksByGenre).map((genre) => (
-                    <View key={genre} style={styles.genreSection}>
-                        <Text style={styles.genreTitle}>{genre}</Text>
-                        <ScrollView
-                            horizontal
-                            showsHorizontalScrollIndicator={false}
-                            contentContainerStyle={styles.genreScroll}
-                        >
-                            {booksByGenre[genre].map((book) => (
-                                <TouchableOpacity
-                                    key={book.id}
-                                    onPress={() => router.push(`/read/${book.id}`)}
-                                    style={styles.bookCard}
-                                    activeOpacity={0.9}
-                                >
-                                    <View style={styles.bookCover}>
-                                        {book.cover_image_url ? (
-                                            <Image
-                                                source={{ uri: getImageUrl(book.cover_image_url) }}
-                                                style={styles.bookCoverImage}
-                                                resizeMode="cover"
-                                            />
-                                        ) : (
-                                            <View style={[styles.bookCoverPlaceholder, { backgroundColor: theme.surfaceVariant }]}>
-                                                <Text style={styles.bookCoverTitle}>{book.title}</Text>
-                                            </View>
-                                        )}
-                                    </View>
-                                    <View style={styles.bookInfo}>
-                                        <Text style={styles.bookTitle} numberOfLines={2}>{book.title}</Text>
-                                        <Text style={styles.bookAuthor} numberOfLines={1}>{book.author}</Text>
-                                        <View style={styles.bookRating}>
-                                            <Star size={12} color="#FFD700" fill="#FFD700" />
-                                            <Text style={styles.bookRatingText}>{book.rating}</Text>
-                                        </View>
-                                    </View>
-                                </TouchableOpacity>
-                            ))}
-                        </ScrollView>
                     </View>
-                ))}
+                </TouchableOpacity>
+            )}
 
-                {books.length === 0 && !loading && (
-                    <Text style={styles.emptyText}>No books found.</Text>
-                )}
+            {/* Search Bar */}
+            <View style={styles.searchContainer}>
+                <Search color={theme.textSecondary} size={20} style={styles.searchIcon} />
+                <TextInput
+                    style={styles.searchInput}
+                    placeholder="Search titles or authors..."
+                    value={searchQuery}
+                    onChangeText={setSearchQuery}
+                    placeholderTextColor={theme.textSecondary}
+                />
+            </View>
 
-                {/* Bottom padding */}
-                <View style={{ height: 40 }} />
-            </ScrollView>
-        </View>
+            {/* Genre Rows */}
+            {Object.keys(booksByGenre).map((genre) => (
+                <View key={genre} style={styles.genreSection}>
+                    <Text style={styles.genreTitle}>{genre}</Text>
+                    <ScrollView
+                        horizontal
+                        showsHorizontalScrollIndicator={false}
+                        contentContainerStyle={styles.genreScroll}
+                    >
+                        {booksByGenre[genre].map((book) => (
+                            <TouchableOpacity
+                                key={book.id}
+                                onPress={() => handleStartReading(book.id)}
+                                style={styles.bookCard}
+                                activeOpacity={0.9}
+                            >
+                                <View style={styles.bookCover}>
+                                    {book.cover_image_url ? (
+                                        <Image
+                                            source={{ uri: getImageUrl(book.cover_image_url) }}
+                                            style={styles.bookCoverImage}
+                                            resizeMode="cover"
+                                        />
+                                    ) : (
+                                        <View style={[styles.bookCoverPlaceholder, { backgroundColor: theme.surfaceVariant }]}>
+                                            <Text style={styles.bookCoverTitle}>{book.title}</Text>
+                                        </View>
+                                    )}
+                                </View>
+                                <View style={styles.bookInfo}>
+                                    <Text style={styles.bookTitle} numberOfLines={2}>{book.title}</Text>
+                                    <Text style={styles.bookAuthor} numberOfLines={1}>{book.author}</Text>
+                                    <View style={styles.bookRating}>
+                                        <Heart size={12} color="#E91E63" fill="#E91E63" />
+                                        <Text style={styles.bookRatingText}>{formatLikes(book.like_count)}</Text>
+                                    </View>
+                                </View>
+                            </TouchableOpacity>
+                        ))}
+                    </ScrollView>
+                </View>
+            ))}
+
+            {books.length === 0 && !loading && (
+                <Text style={styles.emptyText}>No books found.</Text>
+            )}
+
+            {/* Bottom padding */}
+            <View style={{ height: 40 }} />
+        </ScrollView>
     )
 }
 

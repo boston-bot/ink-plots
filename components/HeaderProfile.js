@@ -8,6 +8,7 @@ import { useTheme } from '../lib/theme';
 export default function HeaderProfile() {
     const router = useRouter();
     const [isLoggedIn, setIsLoggedIn] = useState(false);
+    const [initials, setInitials] = useState('IP'); // Default to IP
     const [showMenu, setShowMenu] = useState(false);
     const [menuPosition, setMenuPosition] = useState({ top: 0, right: 10 });
     const buttonRef = useRef(null);
@@ -35,6 +36,29 @@ export default function HeaderProfile() {
         try {
             const token = await AsyncStorage.getItem('userToken');
             setIsLoggedIn(!!token);
+
+            if (token) {
+                const userDataStr = await AsyncStorage.getItem('userData');
+                if (userDataStr) {
+                    const user = JSON.parse(userDataStr);
+                    const name = user.name || user.username || 'User';
+
+                    // Initials logic: First + Last, or First 2 chars
+                    const parts = name.trim().split(/\s+/);
+                    let text = '';
+                    if (parts.length >= 2) {
+                        // First char of first name + First char of last name
+                        text = parts[0][0] + parts[parts.length - 1][0];
+                    } else if (name.length >= 2) {
+                        // First 2 chars of single name
+                        text = name.substring(0, 2);
+                    } else {
+                        // Fallback
+                        text = name.substring(0, 1) || 'IP';
+                    }
+                    setInitials(text.toUpperCase());
+                }
+            }
         } catch (e) {
             console.error("Header Profile Check Error", e);
         }
@@ -64,9 +88,6 @@ export default function HeaderProfile() {
                 <TouchableOpacity onPress={() => router.push('/auth/login')} style={styles.loginBtn}>
                     <Text style={styles.loginText}>Log In</Text>
                 </TouchableOpacity>
-                <TouchableOpacity onPress={() => router.push('/auth/login')} style={styles.signUpBtn}>
-                    <Text style={styles.signUpText}>Sign Up</Text>
-                </TouchableOpacity>
             </View>
         );
     }
@@ -79,7 +100,7 @@ export default function HeaderProfile() {
                 style={styles.profileBtn}
             >
                 <View style={styles.avatar}>
-                    <Text style={styles.avatarText}>IP</Text>
+                    <Text style={styles.avatarText}>{initials}</Text>
                 </View>
             </TouchableOpacity>
 

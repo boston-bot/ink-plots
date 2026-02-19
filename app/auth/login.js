@@ -57,6 +57,14 @@ export default function LoginScreen() { // Renamed component from Login to Login
         <View style={styles.container}>
             <Stack.Screen options={{ headerShown: false }} />
 
+            {/* Top right header link */}
+            <Pressable
+                style={styles.headerLink}
+                onPress={() => router.push('/')}
+            >
+                <Text style={styles.headerText}>The Ink Plots</Text>
+            </Pressable>
+
             <AnimatedEntry>
                 <Text style={styles.logo}>The Ink Plots</Text>
                 <Text style={styles.subtitle}>Sign in to your account</Text>
@@ -71,6 +79,7 @@ export default function LoginScreen() { // Renamed component from Login to Login
                         onChangeText={setEmail}
                         autoCapitalize="none"
                         placeholder="writer@example.com"
+                        placeholderTextColor="#999"
                     />
 
                     <Text style={styles.label}>Password</Text>
@@ -79,6 +88,8 @@ export default function LoginScreen() { // Renamed component from Login to Login
                         value={password}
                         onChangeText={setPassword}
                         secureTextEntry
+                        placeholder="Enter your password"
+                        placeholderTextColor="#999"
                     />
 
                     <Pressable
@@ -95,7 +106,9 @@ export default function LoginScreen() { // Renamed component from Login to Login
 
                     <View style={styles.footer}>
                         <Text style={styles.footerText}>New here?</Text>
-                        <Pressable><Text style={styles.link}> Create an account</Text></Pressable>
+                        <Pressable onPress={() => router.push('/auth/register')}>
+                            <Text style={styles.link}> Create an account</Text>
+                        </Pressable>
                     </View>
                 </View>
             </AnimatedEntry>
@@ -177,5 +190,17 @@ const getStyles = (theme) => StyleSheet.create({
         fontFamily: 'serif',
         fontWeight: 'bold',
         color: theme.text
+    },
+    headerLink: {
+        position: 'absolute',
+        top: 20,
+        right: 30,
+        zIndex: 10,
+    },
+    headerText: {
+        fontFamily: 'serif',
+        fontSize: 18,
+        color: theme.text,
+        fontWeight: '600',
     }
 });

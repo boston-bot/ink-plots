@@ -1,6 +1,6 @@
-import { View, Text, Pressable, StyleSheet, Image, Dimensions, TouchableOpacity, Animated } from 'react-native';
+import { View, Text, Pressable, StyleSheet, Image, Dimensions, TouchableOpacity, Animated, Platform } from 'react-native';
 import { Link, useRouter, useFocusEffect } from 'expo-router';
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useTheme } from '../lib/theme';
@@ -13,7 +13,7 @@ const QUOTES = [
     "“Words are the ghosts of thoughts.”"
 ];
 
-export default function Hero() {
+export default function Hero({ isScrollingDown }) {
     const router = useRouter();
     const { theme } = useTheme();
     const [quoteIndex, setQuoteIndex] = useState(0);
@@ -21,6 +21,18 @@ export default function Hero() {
     const [isLoggedIn, setIsLoggedIn] = useState(false);
     const insets = useSafeAreaInsets();
     const styles = getStyles(theme);
+
+    // Animate navigation opacity based on scroll direction
+    const navOpacity = useRef(new Animated.Value(1)).current;
+
+    useEffect(() => {
+        console.log('Nav opacity animating to:', isScrollingDown ? 0 : 1, 'isScrollingDown:', isScrollingDown);
+        Animated.timing(navOpacity, {
+            toValue: isScrollingDown ? 0 : 1,
+            duration: 200,
+            useNativeDriver: true,
+        }).start();
+    }, [isScrollingDown, navOpacity]);
 
     useFocusEffect(
         useCallback(() => {
@@ -62,14 +74,20 @@ export default function Hero() {
 
     return (
         <View style={[styles.container, { paddingTop: insets.top }]}>
-            <View style={styles.header}>
+            {/* Navigation Header - Hides/shows on scroll */}
+            <Animated.View style={[styles.header, { opacity: navOpacity }]}>
                 <View style={styles.leftSection}>
                     <View style={styles.branding}>
-                        <Text style={styles.logo}>The Ink Plots</Text>
+                        <Link href="/" asChild>
+                            <Pressable>
+                                <Text style={styles.logo}>The Ink Plots</Text>
+                            </Pressable>
+                        </Link>
                     </View>
                     {isLargeScreen && (
                         <View style={styles.navLinks}>
                             <Link href="/library" asChild><Pressable><Text style={styles.navLink}>Library</Text></Pressable></Link>
+                            <Link href="/wip" asChild><Pressable><Text style={styles.navLink}>WIP</Text></Pressable></Link>
                             <Link href="/stories" asChild><Pressable><Text style={styles.navLink}>Stories</Text></Pressable></Link>
                             <Pressable onPress={() => {
                                 if (isLoggedIn) {
@@ -81,7 +99,15 @@ export default function Hero() {
                                 <Text style={styles.navLink}>Start Writing</Text>
                             </Pressable>
                             <Pressable><Text style={styles.navLink}>About</Text></Pressable>
-                            <Pressable><Text style={styles.navLink}>Contact</Text></Pressable>
+                            <Pressable onPress={() => {
+                                if (isLoggedIn) {
+                                    router.push('/submit');
+                                } else {
+                                    router.push('/auth/login?redirect=/submit');
+                                }
+                            }}>
+                                <Text style={styles.navLink}>Submit Work</Text>
+                            </Pressable>
                         </View>
                     )}
                 </View>
@@ -96,20 +122,27 @@ export default function Hero() {
                                     <Text style={styles.loginText}>Log In</Text>
                                 </Pressable>
                             </Link>
-                            <Pressable style={styles.joinBtn}>
-                                <Text style={styles.joinText}>Sign Up</Text>
-                            </Pressable>
+                            <Link href="/auth/register" asChild>
+                                <Pressable style={styles.joinBtn}>
+                                    <Text style={styles.joinText}>Sign Up</Text>
+                                </Pressable>
+                            </Link>
                         </>
                     )}
                 </View>
-            </View>
+            </Animated.View>
 
             {/* Mobile Navigation - Only show on small screens */}
             {!isLargeScreen && (
-                <View style={styles.mobileNav}>
+                <Animated.View style={[styles.mobileNav, { opacity: navOpacity }]}>
                     <Link href="/library" asChild>
                         <Pressable style={styles.mobileNavLink}>
                             <Text style={styles.mobileNavText}>Library</Text>
+                        </Pressable>
+                    </Link>
+                    <Link href="/wip" asChild>
+                        <Pressable style={styles.mobileNavLink}>
+                            <Text style={styles.mobileNavText}>WIP</Text>
                         </Pressable>
                     </Link>
                     <Link href="/stories" asChild>
@@ -129,9 +162,10 @@ export default function Hero() {
                     >
                         <Text style={styles.mobileNavText}>Start Writing</Text>
                     </Pressable>
-                </View>
+                </Animated.View>
             )}
 
+            {/* Hero Content - Always visible */}
             <View style={[styles.content, isLargeScreen && styles.contentRow]}>
                 <View style={[styles.textContent, isLargeScreen && styles.textContentLarge]}>
                     <Text style={styles.headline}>
@@ -214,11 +248,21 @@ const getStyles = (theme) => StyleSheet.create({
         flexDirection: 'row',
         justifyContent: 'space-between',
         alignItems: 'center',
-        marginBottom: 60,
+        marginBottom: 20,
         borderBottomWidth: 1,
         borderBottomColor: theme.border,
         paddingBottom: 20,
         zIndex: 100, // Ensure header is on top for dropdown
+        ...(Platform.OS === 'web' && {
+            position: 'sticky',
+            top: 0,
+            backgroundColor: theme.background,
+            paddingTop: 20,
+            shadowColor: theme.shadow,
+            shadowOffset: { width: 0, height: 2 },
+            shadowOpacity: 0.1,
+            shadowRadius: 4,
+        }),
     },
     logo: {
         fontFamily: 'serif',
@@ -395,19 +439,21 @@ const getStyles = (theme) => StyleSheet.create({
     mobileNav: {
         flexDirection: 'row',
         justifyContent: 'center',
-        gap: 20,
-        paddingVertical: 16,
+        alignItems: 'center',
+        gap: 8,
+        paddingVertical: 8,
         borderBottomWidth: 1,
         borderBottomColor: theme.border,
         marginBottom: 20,
+        paddingHorizontal: 8,
     },
     mobileNavLink: {
-        paddingHorizontal: 20,
+        paddingHorizontal: 8,
         paddingVertical: 8,
     },
     mobileNavText: {
         fontFamily: 'serif',
-        fontSize: 16,
+        fontSize: 13,
         fontWeight: '600',
         color: theme.textSecondary,
     },

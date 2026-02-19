@@ -1,6 +1,6 @@
-import { View, Text, TouchableOpacity, StyleSheet, Platform } from 'react-native';
+import { View, Text, TouchableOpacity, Pressable, StyleSheet, Platform } from 'react-native';
 import { useRouter } from 'expo-router';
-import { Clock, Edit, Trash2, Send } from 'lucide-react-native';
+import { Clock, Edit, Trash2, Send, BookOpen } from 'lucide-react-native';
 import { useState } from 'react';
 import { useTheme } from '../lib/theme';
 
@@ -16,89 +16,152 @@ export default function WriterStoryCard({ story, onDelete, onPublish }) {
         submitted: '#2196F3',
     };
 
+    // Debug: Log story status
+    console.log('WriterStoryCard rendering:', {
+        id: story.id,
+        title: story.title,
+        status: story.status,
+        isDraft: story.status === 'draft'
+    });
+
     const formatDate = (date) => {
         return new Date(date).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
     };
 
     return (
-        <TouchableOpacity
+        <View
             style={[styles.card, isHovered && Platform.OS === 'web' && styles.cardHovered]}
-            onPress={() => router.push(`/writer/edit/${story.id}`)}
             onMouseEnter={() => Platform.OS === 'web' && setIsHovered(true)}
             onMouseLeave={() => Platform.OS === 'web' && setIsHovered(false)}
-            activeOpacity={0.9}
         >
-            {/* Cover Preview */}
-            <View style={[styles.cover, { backgroundColor: story.cover_color || '#E3F2FD' }]}>
+            {/* Cover Preview - clickable to edit */}
+            <Pressable
+                style={[styles.cover, { backgroundColor: story.cover_color || '#E3F2FD' }]}
+                onPress={() => router.push(`/writer/edit/${story.id}`)}
+            >
                 {story.cover_image_url ? (
                     <Text style={styles.coverPlaceholder}>Cover</Text>
                 ) : (
                     <Text style={styles.coverTitle} numberOfLines={2}>{story.title}</Text>
                 )}
-            </View>
+            </Pressable>
 
             {/* Content */}
             <View style={styles.content}>
-                <View style={styles.header}>
-                    <View style={[styles.statusBadge, { backgroundColor: statusColors[story.status] }]}>
-                        <Text style={styles.statusText}>{story.status}</Text>
-                    </View>
-                    {story.reading_time && (
-                        <View style={styles.timeTag}>
-                            <Clock size={12} color="#666" />
-                            <Text style={styles.timeText}>{story.reading_time} min</Text>
+                {/* Header and Title - clickable to edit */}
+                <Pressable onPress={() => router.push(`/writer/edit/${story.id}`)}>
+                    <View style={styles.header}>
+                        <View style={[styles.statusBadge, { backgroundColor: statusColors[story.status] }]}>
+                            <Text style={styles.statusText}>{story.status}</Text>
                         </View>
-                    )}
-                </View>
+                        {story.reading_time && (
+                            <View style={styles.timeTag}>
+                                <Clock size={12} color="#666" />
+                                <Text style={styles.timeText}>{story.reading_time} min</Text>
+                            </View>
+                        )}
+                    </View>
 
-                <Text style={styles.title} numberOfLines={2}>{story.title}</Text>
+                    <Text style={styles.title} numberOfLines={2}>{story.title}</Text>
 
-                {/* Content Type Badge */}
-                <View style={[styles.typeBadge, { backgroundColor: story.content_type === 'book' ? '#6A4C93' : '#FF6B35' }]}>
-                    <Text style={styles.typeText}>{story.content_type === 'book' ? '📚 Book' : '📝 Story'}</Text>
-                </View>
+                    {/* Content Type Badge */}
+                    <View style={[styles.typeBadge, { backgroundColor: story.content_type === 'book' ? '#6A4C93' : '#FF6B35' }]}>
+                        <Text style={styles.typeText}>{story.content_type === 'book' ? '📚 Book' : '📝 Story'}</Text>
+                    </View>
 
-                {story.genre && <Text style={styles.genre}>{story.genre}</Text>}
-                <Text style={styles.date}>Updated {formatDate(story.updated_at)}</Text>
+                    {story.genre && <Text style={styles.genre}>{story.genre}</Text>}
+                    <Text style={styles.date}>Updated {formatDate(story.updated_at)}</Text>
+                </Pressable>
 
-                {/* Actions */}
+                {/* Actions - standalone buttons, no parent interference */}
                 <View style={styles.actions}>
-                    <TouchableOpacity
+                    <Pressable
                         style={styles.actionBtn}
-                        onPress={(e) => {
-                            e.stopPropagation();
+                        onPress={() => {
+                            router.push(`/read/${story.id}?storyType=story`);
+                        }}
+                    >
+                        <BookOpen size={16} color="#2196F3" />
+                        <Text style={[styles.actionText, { color: '#2196F3' }]}>Read</Text>
+                    </Pressable>
+
+                    <Pressable
+                        style={styles.actionBtn}
+                        onPress={() => {
                             router.push(`/writer/edit/${story.id}`);
                         }}
                     >
                         <Edit size={16} color="#666" />
                         <Text style={styles.actionText}>Edit</Text>
-                    </TouchableOpacity>
+                    </Pressable>
 
                     {story.status === 'draft' && (
-                        <TouchableOpacity
-                            style={[styles.actionBtn, styles.publishBtn]}
-                            onPress={(e) => {
-                                e.stopPropagation();
-                                onPublish && onPublish(story.id);
-                            }}
-                        >
-                            <Send size={16} color="#4CAF50" />
-                            <Text style={[styles.actionText, { color: '#4CAF50' }]}>Publish</Text>
-                        </TouchableOpacity>
+                        (() => {
+                            console.log('Rendering publish button for story:', story.id, 'Platform:', Platform.OS);
+                            return Platform.OS === 'web' ? (
+                                <button
+                                    style={{
+                                        ...styles.actionBtn,
+                                        ...styles.publishBtn,
+                                        display: 'flex',
+                                        flexDirection: 'row',
+                                        alignItems: 'center',
+                                        gap: 6,
+                                        border: '2px solid red',
+                                        background: 'rgba(255,0,0,0.2)',
+                                        cursor: 'pointer',
+                                        padding: '6px 10px',
+                                    }}
+                                    onClick={(e) => {
+                                        console.log('=== CLICK EVENT FIRED ===', e);
+                                        console.log('=== PUBLISH BUTTON CLICKED (WEB) ===');
+                                        console.log('Story ID:', story.id);
+                                        console.log('onPublish exists?', !!onPublish);
+                                        if (onPublish) {
+                                            console.log('Calling onPublish...');
+                                            onPublish(story.id);
+                                        } else {
+                                            console.error('onPublish is not defined!');
+                                        }
+                                    }}
+                                >
+                                    <Send size={16} color="#4CAF50" />
+                                    <Text style={[styles.actionText, { color: '#4CAF50' }]}>Publish [DEBUG]</Text>
+                                </button>
+                            ) : (
+                                <Pressable
+                                    style={[styles.actionBtn, styles.publishBtn]}
+                                    onPress={() => {
+                                        console.log('=== PUBLISH BUTTON CLICKED ===');
+                                        console.log('Story ID:', story.id);
+                                        console.log('onPublish exists?', !!onPublish);
+                                        console.log('onPublish type:', typeof onPublish);
+                                        if (onPublish) {
+                                            console.log('Calling onPublish...');
+                                            onPublish(story.id);
+                                        } else {
+                                            console.error('onPublish is not defined!');
+                                        }
+                                    }}
+                                >
+                                    <Send size={16} color="#4CAF50" />
+                                    <Text style={[styles.actionText, { color: '#4CAF50' }]}>Publish</Text>
+                                </Pressable>
+                            );
+                        })()
                     )}
 
-                    <TouchableOpacity
+                    <Pressable
                         style={styles.actionBtn}
-                        onPress={(e) => {
-                            e.stopPropagation();
+                        onPress={() => {
                             onDelete && onDelete(story.id);
                         }}
                     >
                         <Trash2 size={16} color="#E63946" />
-                    </TouchableOpacity>
+                    </Pressable>
                 </View>
             </View>
-        </TouchableOpacity>
+        </View>
     );
 }
 

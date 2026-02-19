@@ -1,32 +1,35 @@
 {
-    "expo": {
-        "name": "ink-plots",
-        "slug": "ink-plots",
-        "scheme": "ink-plots",
-        "version": "1.0.0",
-        "orientation": "portrait",
-        "userInterfaceStyle": "dark",
-        "backgroundColor": "#121212",
-        "splash": {
-            "image": "./assets/splash.png",
-            "resizeMode": "contain",
-            "backgroundColor": "#121212"
-        },
-        "assetBundlePatterns": [
-            "**/*"
-        ],
-        "ios": {
-            "supportsTablet": true,
-            "backgroundColor": "#121212"
-        },
-        "android": {
-            "adaptiveIcon": {
-                "backgroundColor": "#121212"
-            }
-        },
-        "web": {
-            "bundler": "metro",
-            "backgroundColor": "#F9F7F1"
-        }
-    }
+  "expo": {
+    "name": "ink-plots",
+    "slug": "ink-plots",
+    "scheme": "ink-plots",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "dark",
+    "backgroundColor": "#121212",
+    "splash": {
+      "image": "./assets/splash.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#121212"
+    },
+    "assetBundlePatterns": [
+      "**/*"
+    ],
+    "ios": {
+      "supportsTablet": true,
+      "backgroundColor": "#121212"
+    },
+    "android": {
+      "adaptiveIcon": {
+        "backgroundColor": "#121212"
+      }
+    },
+    "web": {
+      "bundler": "metro",
+      "backgroundColor": "#F9F7F1"
+    },
+    "plugins": [
+      "expo-router"
+    ]
+  }
 }
